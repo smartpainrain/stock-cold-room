@@ -4,43 +4,65 @@ import pymysql
 import datetime
 import yfinance as yf
 
-# 상단 헤더
-st.markdown("### stock-cold-room 🚀", unsafe_allow_html=True)
+# 1. 상단 타이틀 (로켓 등 장식 아이콘 일체 제거)
+st.markdown("### stock-cold-room", unsafe_allow_html=True)
 
-# 실시간 코스피 지수 가져오기 함수
-@st.cache_data(ttl=300) # 5분마다 캐시 갱신
-def get_kospi_data():
+# 2. 진짜 실시간 코스피 지수 및 DB 연결 상태 체크 함수
+@st.cache_data(ttl=60)
+def check_system_and_market():
+    # 코스피 지수 가져오기
+    kospi_text = "코스피 연동 대기중"
     try:
         kospi = yf.Ticker("^KS11")
-        todays_data = kospi.history(period="1d")
-        if not todays_data.empty:
-            current_price = todays_data['Close'].iloc[-1]
-            prev_close = kospi.info.get('previousClose', current_price)
-            change = current_price - prev_close
-            change_pct = (change / prev_close) * 100
-            
-            # 색상 및 방향 설정
-            color = "red" if change > 0 else ("blue" if change < 0 else "gray")
-            sign = "+" if change > 0 else ""
-            status_text = f"코스피 ^KS11: {current_price:,.2f} ({sign}{change:,.2f}, {sign}{change_pct:.2f}%)"
-            return status_text, "🟢 시스템 정상 작동중"
+        df_k = kospi.history(period="2d")
+        if len(df_k) >= 2:
+            cur = df_k['Close'].iloc[-1]
+            prev = df_k['Close'].iloc[-2]
+            chg = cur - prev
+            chg_pct = (chg / prev) * 100
+            sign = "+" if chg > 0 else ""
+            kospi_text = f"KOSPI: {cur:,.2f} ({sign}{chg:,.2f}, {sign}{chg_pct:.2f}%)"
+        elif len(df_k) == 1:
+            cur = df_k['Close'].iloc[-1]
+            kospi_text = f"KOSPI: {cur:,.2f}"
     except Exception:
-        pass
-    return "코스피 지수 연동 대기중", "🟡 시스템 점검중"
+        kospi_text = "KOSPI 통신 지연"
 
-kospi_status, sys_status = get_kospi_data()
+    # 카페24 DB 실제 통신 테스트 (진짜 작동 여부 체크)
+    db_status = "🟢 DB 정상 연결"
+    try:
+        if "mysql" in st.secrets:
+            conn = pymysql.connect(
+                host=st.secrets["mysql"]["host"],
+                user=st.secrets["mysql"]["user"],
+                password=st.secrets["mysql"]["password"],
+                database=st.secrets["mysql"]["database"],
+                charset='utf8mb4',
+                cursorclass=pymysql.cursors.DictCursor,
+                connect_timeout=3
+            )
+            conn.close()
+        else:
+            db_status = "🟡 Secrets 설정 필요"
+    except Exception:
+        db_status = "🔴 DB 연결 실패"
 
+    return kospi_text, db_status
+
+kospi_str, db_str = check_system_and_market()
+
+# 상단 인포메이션 바 (실시간 데이터 반영)
 col1, col2 = st.columns([2, 1])
 with col1:
-    st.markdown(f"📊 **{kospi_status}** | {sys_status}")
+    st.markdown(f"**{kospi_str}** &nbsp;|&nbsp; {db_str}")
 with col2:
-    now = datetime.datetime.now().strftime("%m-%d %H:%M")
-    st.markdown(f"<div style='text-align: right;'>갱신 {now}</div>", unsafe_allow_html=True)
+    # 진짜 현재 실행 시각 반영 (초 단위까지 정확하게)
+    now = datetime.datetime.now().strftime("%m-%d %H:%M:%S")
+    st.markdown(f"<div style='text-align: right; color: gray; font-size: 14px;'>갱신 {now}</div>", unsafe_allow_html=True)
 
 st.divider()
 
-# 카페24 MySQL 데이터 불러오기 + 자동 테이블 생성 함수
-@st.cache_data(ttl=60)
+# 3. 데이터 불러오기 함수 (카페24 MySQL 연동)
 def load_stock_data():
     fallback_data = pd.DataFrame({
         "종목명": ["아난티", "한화에어로스페이스", "대아티아이", "마이크로컨텍솔", "삼양식품", "셀트리온"],
@@ -63,6 +85,7 @@ def load_stock_data():
         )
         
         with connection.cursor() as cursor:
+            # 테이블 자동 생성 보장
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS stock_control_tower (
                     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -100,12 +123,12 @@ def load_stock_data():
 
 df = load_stock_data()
 
-# 테이블 출력
+# 아래 표 영역 (DB 또는 방어 데이터 바인딩 결과)
 st.dataframe(df, use_container_width=True, hide_index=True)
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# 하단 AI / 질의응답 섹션 (Cold-Bot)
+# 4. 하단 AI / 질의응답 섹션 (Cold-Bot)
 st.markdown("#### 🤖 Cold-Bot에게 질문 (실측 데이터 기반)")
 user_query = st.text_input("", placeholder="내PC데이터 종합해서 상승확률 높은순 그리고 가장먼저 급등할 종목은?")
 
