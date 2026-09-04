@@ -37,31 +37,43 @@ with col_h2:
 
 st.divider()
 
-# 2. 핵심 지표 요약 카드
-col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-col_m1.metric(label="총 평가 자산", value="142,500,000 원", delta="+1,250,000 원")
-col_m2.metric(label="포트폴리오 평균 초과수익(α)", value="+1.53%", delta="+0.12%")
-col_m3.metric(label="관제 종목 수", value="6개", delta="Stable")
-col_m4.metric(label="최대 낙폭 (MDD)", value="-2.4%", delta="-0.1% 안정")
-
-st.markdown("<br>", unsafe_allow_html=True)
-
-# 3. 세션 상태 초기화 (종목 데이터)
+# 2. 세션 상태 초기화 (매수 단가, 매수 수량, 추천 상태 반영)
 if 'stock_df' not in st.session_state:
     st.session_state.stock_df = pd.DataFrame({
         "종목명": ["아난티", "한화에어로스페이스", "대아티아이", "마이크로컨텍솔", "삼양식품", "셀트리온"],
         "티커": ["025980.KS", "012450.KS", "045390.KQ", "098120.KQ", "003230.KS", "068270.KS"],
         "현재가": [5500, 1164000, 3455, 40900, 1341000, 194600],
-        "보유비중(%)": [10.0, 30.0, 10.0, 15.0, 25.0, 10.0],
-        "초과수익(α)": [1.953, 1.424, 1.538, 2.702, 0.969, 0.657],
-        "매집단계": ["L1", "L4", "L1", "L1", "L4", "L6"]
+        "매수 단가": [5200, 1100000, 3300, 40000, 1300000, 190000],
+        "매수 수량": [100, 10, 200, 50, 5, 20],
+        "추천": ["매수", "관망", "매수", "매수", "관망", "매도"]
     })
 
-st.markdown("#### 🎯 실시간 종목 모니터링 및 간편 등록")
-st.caption("주요 종목은 이름만 넣어도 자동 조회되며, 아래 표에서 직접 값을 수정하거나 행을 추가/삭제할 수 있습니다.")
+# 자산 및 손익 계산 로직
+df = st.session_state.stock_df
+try:
+    df['현재가'] = pd.to_numeric(df['현재가'], errors='coerce').fillna(0)
+    df['매수 단가'] = pd.to_numeric(df['매수 단가'], errors='coerce').fillna(0)
+    df['매수 수량'] = pd.to_numeric(df['매수 수량'], errors='coerce').fillna(0)
+    
+    total_eval = (df['현재가'] * df['매수 수량']).sum()
+    total_invest = (df['매수 단가'] * df['매수 수량']).sum()
+    total_profit = total_eval - total_invest
+    total_return_pct = (total_profit / total_invest * 100) if total_invest > 0 else 0.0
+except:
+    total_eval, total_invest, total_profit, total_return_pct = 0, 0, 0, 0.0
 
-# --- 간편 종목 추가 폼 (자동 매핑 및 수동 보완) ---
-# 자주 쓰는 종목 자동 매핑 사전
+# 요약 카드 동적 렌더링
+col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+col_m1.metric(label="총 평가 자산", value=f"{total_eval:,.0f} 원", delta=f"{total_profit:+,.0f} 원")
+col_m2.metric(label="총 투자 원금", value=f"{total_invest:,.0f} 원")
+col_m3.metric(label="포트폴리오 총 수익률", value=f"{total_return_pct:+.2f}%")
+col_m4.metric(label="관제 종목 수", value=f"{len(df)}개")
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+st.markdown("#### 🎯 실시간 종목 모니터링 및 관리")
+st.caption("표에서 매수 단가, 수량, 추천 상태 등을 직접 수정할 수 있습니다.")
+
 name_to_ticker = {
     "삼성전자": "005930.KS",
     "SK하이닉스": "000660.KS",
@@ -74,56 +86,64 @@ name_to_ticker = {
     "LG에너지솔루션": "373220.KS"
 }
 
+# --- 종목 추가 폼 ---
 with st.form("add_stock_form", clear_on_submit=True):
     f_col1, f_col2, f_col3, f_col4 = st.columns(4)
     
     with f_col1:
-        input_name = st.text_input("종목명", placeholder="예: 삼성전자 또는 직접입력")
+        input_name = st.text_input("종목명", placeholder="예: 삼성전자")
     with f_col2:
-        input_weight = st.number_input("보유비중(%)", min_value=0.0, max_value=100.0, value=10.0)
+        input_buy_price = st.number_input("매수 단가 (원)", min_value=0, value=10000, step=100)
     with f_col3:
-        input_alpha = st.number_input("초과수익(α %)", value=1.0)
+        input_qty = st.number_input("매수 수량", min_value=1, value=10)
     with f_col4:
-        input_stage = st.selectbox("매집단계", ["L1", "L2", "L3", "L4", "L5", "L6"])
+        input_recommend = st.selectbox("추천 상태", ["매수", "관망", "매도"])
         
-    submitted = st.form_submit_button("종목 추가 및 현재가 자동 조회")
+    submitted = st.form_submit_button("신규 종목 추가 (현재가 자동 조회)")
     
     if submitted and input_name:
-        # 사전에 있으면 티커 자동 할당, 없으면 사용자가 입력한 값이나 기본값 처리
-        ticker = name_to_ticker.get(input_name, "")
-        current_price = 0
+        ticker = name_to_ticker.get(input_name, "005930.KS")
+        current_price = input_buy_price
         
-        if ticker:
-            try:
-                live_data = yf.Ticker(ticker).history(period="1d")
-                if not live_data.empty:
-                    current_price = int(live_data['Close'].iloc[-1])
-            except:
-                pass
-                
-        # 자동 조회가 안 되었을 경우 기본값 지정 (표에서 나중에 직접 수정 가능)
-        if current_price == 0:
-            ticker = ticker if ticker else "005930.KS"
-            current_price = 10000  # 기본 임시가 (표에서 바로 수정 가능)
+        try:
+            live_data = yf.Ticker(ticker).history(period="1d")
+            if not live_data.empty:
+                current_price = int(live_data['Close'].iloc[-1])
+        except:
+            pass
             
         new_row = pd.DataFrame({
             "종목명": [input_name],
             "티커": [ticker],
             "현재가": [current_price],
-            "보유비중(%)": [input_weight],
-            "초과수익(α)": [input_alpha],
-            "매집단계": [input_stage]
+            "매수 단가": [input_buy_price],
+            "매수 수량": [input_qty],
+            "추천": [input_recommend]
         })
         
         st.session_state.stock_df = pd.concat([st.session_state.stock_df, new_row], ignore_index=True)
-        st.success(f"'{input_name}' 종목이 추가되었습니다! (현재가: {current_price:,}원 - 표에서 직접 수정 가능)")
+        st.success(f"'{input_name}' 종목이 추가되었습니다! (실시간 현재가: {current_price:,}원)")
         st.rerun()
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# 데이터 편집기 (여기서 현재가, 비중, 매집단계 등을 내 손으로 직접 자유롭게 수정 가능)
+# 데이터 편집기 (값 직접 수정 가능)
 edited_df = st.data_editor(st.session_state.stock_df, num_rows="dynamic", use_container_width=True, hide_index=True)
 st.session_state.stock_df = edited_df
+
+# --- 종목 삭제 기능 영역 ---
+st.markdown("<br>", unsafe_allow_html=True)
+st.markdown("#### 🗑️ 종목 삭제 관리")
+if not st.session_state.stock_df.empty:
+    del_col1, del_col2 = st.columns([3, 1])
+    with del_col1:
+        stock_to_delete = st.selectbox("삭제할 종목 선택", st.session_state.stock_df["종목명"].tolist(), key="del_select")
+    with del_col2:
+        st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+        if st.button("선택 종목 삭제"):
+            st.session_state.stock_df = st.session_state.stock_df[st.session_state.stock_df["종목명"] != stock_to_delete].reset_index(drop=True)
+            st.success(f"'{stock_to_delete}' 종목이 삭제되었습니다.")
+            st.rerun()
 
 st.markdown("<br>", unsafe_allow_html=True)
 
