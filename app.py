@@ -4,9 +4,6 @@ import datetime
 from zoneinfo import ZoneInfo
 import yfinance as yf
 
-# 페이지 설정
-st.set_page_config(page_title="stock-cold-room", page_layout="wide")
-
 # 1. 상단 타이틀 및 KST 실시간 시각
 st.markdown("### stock-cold-room", unsafe_allow_html=True)
 
@@ -35,7 +32,6 @@ col_h1, col_h2 = st.columns([2, 1])
 with col_h1:
     st.markdown(f"**{kospi_str}**")
 with col_h2:
-    # 한국 시간(KST) 정확히 반영
     now = datetime.datetime.now(ZoneInfo("Asia/Seoul")).strftime("%m-%d %H:%M:%S")
     st.markdown(f"<div style='text-align: right; color: gray; font-size: 14px;'>갱신 {now} (KST)</div>", unsafe_allow_html=True)
 
@@ -63,10 +59,8 @@ def get_control_tower_data():
 
 df = get_control_tower_data()
 
-# 리스크 경고 로직 (특정 종목 비중이 25%를 초과할 경우 경고 배지 부여)
 st.markdown("#### 🎯 알파 관제탑 및 리스크 모니터링")
 
-# Pandas Styler를 활용한 조건부 서식 (초과수익률에 따른 색상 강조)
 def color_alpha(val):
     color = 'color: #ff4b4b;' if val > 1.5 else 'color: #1c83e1;'
     return color
@@ -80,7 +74,6 @@ st.markdown("<br>", unsafe_allow_html=True)
 st.markdown("#### 📈 종목별 심층 시계열 분석")
 selected_stock = st.selectbox("상세 차트를 확인할 종목을 선택하세요", df["종목명"].tolist())
 
-# 선택한 종목에 따른 야후 파이낸스 티커 매핑 (예시용 매핑)
 ticker_map = {
     "아난티": "025980.KS",
     "한화에어로스페이스": "012450.KS",
