@@ -28,7 +28,7 @@ def get_kospi_data():
 
 kospi_str = get_kospi_data()
 
-# 상단 인포메이션 바 (지저분한 DB 연결 실패 문구 제거)
+# 상단 인포메이션 바
 col1, col2 = st.columns([2, 1])
 with col1:
     st.markdown(f"**{kospi_str}**")
@@ -52,15 +52,3 @@ df = get_control_tower_data()
 
 # 테이블 출력
 st.dataframe(df, use_container_width=True, hide_index=True)
-
-st.markdown("<br>", unsafe_allow_html=True)
-
-# 4. 하단 AI / 질의응답 섹션 (Cold-Bot - 가짜 대답 제거 후 깔끔한 인터페이스로 정돈)
-st.markdown("#### 🤖 Cold-Bot")
-user_query = st.text_input("", placeholder="종목 분석 조건이나 명령어를 입력하세요...")
-
-if st.button("질문 전송") and user_query:
-    # 추후 실제 LLM이나 분석 모듈과 연동될 수 있는 자리
-    st.info(f"입력된 쿼리: '{user_query}'에 대한 연산 모듈 대기 중입니다.")
-
-st.markdown("<p style='font-size:12px; color:gray; text-align:center;'>이러한 판단은 사용자 본인의 책임입니다.</p>", unsafe_allow_html=True)
