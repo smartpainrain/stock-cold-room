@@ -65,8 +65,8 @@ def resolve_ticker(name_or_code: str) -> str:
         return cleaned.upper()
     return f"{cleaned}.KS"
 
-# 기술적 분석 연산 함수 (20/60일선, RSI 14, 거래량 배수)
-@st.cache_data(ttl=300)
+# 기술적 분석 연산 함수 (캐시 60초로 단축하여 실시간성 강화)
+@st.cache_data(ttl=60)
 def analyze_technical_signals(ticker: str):
     default_res = {"현재가": 0, "RSI": 50.0, "20일이격": 100.0, "추천": "🟡 관망"}
     try:
@@ -125,23 +125,25 @@ def analyze_technical_signals(ticker: str):
     except Exception:
         return default_res
 
-# 2. 세션 상태 초기화
-BASE_COLUMNS = ["종목명", "티커", "단가", "수량"]
+# 2. 세션 상태 초기화 (종목명, 티커, 매수가)
+BASE_COLUMNS = ["종목명", "티커", "매수가"]
 
 if 'stock_df' not in st.session_state or any(c not in st.session_state.stock_df.columns for c in BASE_COLUMNS):
     st.session_state.stock_df = pd.DataFrame([
-        {"종목명": "삼성전자", "티커": "005930.KS", "단가": 70000, "수량": 50},
-        {"종목명": "SK하이닉스", "티커": "000660.KS", "단가": 170000, "수량": 20},
-        {"종목명": "한화에어로스페이스", "티커": "012450.KS", "단가": 290000, "수량": 10},
+        {"종목명": "삼성전자", "티커": "005930.KS", "매수가": 72000},
+        {"종목명": "SK하이닉스", "티커": "000660.KS", "매수가": 165000},
+        {"종목명": "한화에어로스페이스", "티커": "012450.KS", "매수가": 310000},
     ])
 
 # 3. 신규 종목 등록 폼
-st.markdown("#### 🎯 실시간 기술적 분석 관제탑")
+st.markdown("#### 🎯 종목 모니터링")
 
 with st.form("add_stock_form", clear_on_submit=True):
-    col_input, col_btn = st.columns([3, 1])
+    col_input, col_buy, col_btn = st.columns([3, 2, 1])
     with col_input:
         input_name = st.text_input("종목명 또는 종목코드(6자리)", placeholder="예: SK하이닉스 또는 000660")
+    with col_buy:
+        input_buy = st.number_input("매수가 (원)", min_value=0, value=0, step=100)
     with col_btn:
         st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
         submitted = st.form_submit_button("신규 종목 추가")
@@ -151,22 +153,36 @@ with st.form("add_stock_form", clear_on_submit=True):
         new_row = pd.DataFrame([{
             "종목명": input_name.strip(),
             "티커": resolved,
-            "단가": 0,
-            "수량": 0
+            "매수가": input_buy
         }])
         st.session_state.stock_df = pd.concat([st.session_state.stock_df, new_row], ignore_index=True)
         st.rerun()
 
-# 4. 기술적 지표 실시간 계산 및 테이블 바인딩
+# 4. 기술적 지표 및 수익률 실시간 연산
 display_rows = []
 for idx, row in st.session_state.stock_df.iterrows():
     sig = analyze_technical_signals(row['티커'])
+    cur_p = sig["현재가"]
+    buy_p = row["매수가"]
+    
+    # 수익률 계산 및 컬러 텍스트 포맷 (상승: 빨간색, 하락: 파란색)
+    if buy_p > 0 and cur_p > 0:
+        ret_rate = ((cur_p - buy_p) / buy_p) * 100
+        if ret_rate > 0:
+            ret_display = f"🔺 +{ret_rate:.2f}%"
+        elif ret_rate < 0:
+            ret_display = f"🔻 {ret_rate:.2f}%"
+        else:
+            ret_display = "0.00%"
+    else:
+        ret_display = "-"
+
     display_rows.append({
         "종목명": row["종목명"],
         "티커": row["티커"],
-        "현재가": sig["현재가"],
-        "단가": row["단가"],
-        "수량": row["수량"],
+        "현재가": cur_p,
+        "매수가": buy_p,
+        "수익": ret_display,
         "20일이격": f"{sig['20일이격']}%",
         "RSI": sig["RSI"],
         "추천": sig["추천"]
@@ -174,16 +190,17 @@ for idx, row in st.session_state.stock_df.iterrows():
 
 display_df = pd.DataFrame(display_rows)
 
-st.caption("20/60일선 추세, 14일 RSI, 거래량 폭증 여부를 종합 산출한 기술적 추천 지표입니다. 단가와 수량을 수정할 수 있습니다.")
+st.caption("매수가를 입력하면 현재가와 비교하여 수익률(%)이 실시간 산출됩니다. 매수가 셀을 더블클릭하여 직접 수정할 수 있습니다.")
 
+# 데이터 에디터 (매수가만 편집 가능)
 edited_df = st.data_editor(
     display_df,
     column_config={
         "종목명": st.column_config.TextColumn(disabled=True),
         "티커": st.column_config.TextColumn(disabled=True),
         "현재가": st.column_config.NumberColumn(format="%d 원", disabled=True),
-        "단가": st.column_config.NumberColumn(format="%d 원", min_value=0),
-        "수량": st.column_config.NumberColumn(min_value=0, step=1),
+        "매수가": st.column_config.NumberColumn(format="%d 원", min_value=0, step=100),
+        "수익": st.column_config.TextColumn(disabled=True),
         "20일이격": st.column_config.TextColumn(disabled=True),
         "RSI": st.column_config.NumberColumn(disabled=True),
         "추천": st.column_config.TextColumn(disabled=True),
@@ -192,9 +209,8 @@ edited_df = st.data_editor(
     hide_index=True
 )
 
-# 단가 및 수량 입력값 세션 동기화
-st.session_state.stock_df["단가"] = edited_df["단가"]
-st.session_state.stock_df["수량"] = edited_df["수량"]
+# 매수가 수정 시 세션 데이터 동기화
+st.session_state.stock_df["매수가"] = edited_df["매수가"]
 
 # 5. 종목 삭제 관리
 st.markdown("<br>", unsafe_allow_html=True)
