@@ -4,7 +4,6 @@ import pymysql
 import datetime
 
 # 🚨 페이지 설정 (맨 처음에 위치)
-st.set_page_config(page_title="stock-cold-room", page_layout="wide")
 
 # 상단 헤더
 st.markdown("### stock-cold-room 🚀 <span style='color:orange; font-size:16px;'>코스피 S8 하락지속</span>", unsafe_allow_html=True)
