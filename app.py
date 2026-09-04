@@ -4,7 +4,7 @@ import pymysql
 import datetime
 
 # 🚨 무조건 이 코드가 파일의 가장 첫 번째(최상단)에 와야 함!
-
+st.set_page_config(page_title="stock-cold-room", page_layout="wide")
 
 # 상단 헤더
 st.markdown("### stock-cold-room 🚀 <span style='color:orange; font-size:16px;'>코스피 S8 하락지속</span>", unsafe_allow_html=True)
