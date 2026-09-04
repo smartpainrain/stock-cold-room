@@ -46,10 +46,9 @@ col_m4.metric(label="최대 낙폭 (MDD)", value="-2.4%", delta="-0.1% 안정")
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# 3. 관제탑 데이터 및 리스크/비중 관리 데이터 프레임
-@st.cache_data
-def get_control_tower_data():
-    return pd.DataFrame({
+# 3. 세션 상태를 이용한 실시간 종목 관리 (등록 및 수정 가능)
+if 'stock_df' not in st.session_state:
+    st.session_state.stock_df = pd.DataFrame({
         "종목명": ["아난티", "한화에어로스페이스", "대아티아이", "마이크로컨텍솔", "삼양식품", "셀트리온"],
         "현재가": [5500, 1164000, 3455, 40900, 1341000, 194600],
         "보유비중(%)": [10.0, 30.0, 10.0, 15.0, 25.0, 10.0],
@@ -57,22 +56,23 @@ def get_control_tower_data():
         "매집단계": ["L1", "L4", "L1", "L1", "L4", "L6"]
     })
 
-df = get_control_tower_data()
+st.markdown("#### 🎯 종목 모니터링 (데이터 직접 수정 및 추가 가능)")
+st.caption("아래 표의 셀을 직접 클릭해서 값을 수정할 수 있습니다.")
 
-st.markdown("#### 🎯 알파 관제탑 및 리스크 모니터링")
-
-def color_alpha(val):
-    color = 'color: #ff4b4b;' if val > 1.5 else 'color: #1c83e1;'
-    return color
-
-styled_df = df.style.map(color_alpha, subset=['초과수익(α)'])
-st.dataframe(styled_df, use_container_width=True, hide_index=True)
+# Streamlit 내장 데이터 편집기 (직접 수정, 행 추가/삭제 가능)
+edited_df = st.data_editor(st.session_state.stock_df, num_rows="dynamic", use_container_width=True, hide_index=True)
+st.session_state.stock_df = edited_df
 
 st.markdown("<br>", unsafe_allow_html=True)
 
 # 4. 인터랙티브 차트 드릴다운 (Drill-down Charting)
 st.markdown("#### 📈 종목별 심층 시계열 분석")
-selected_stock = st.selectbox("상세 차트를 확인할 종목을 선택하세요", df["종목명"].tolist())
+
+current_stocks = st.session_state.stock_df["종목명"].dropna().tolist()
+if current_stocks:
+    selected_stock = st.selectbox("상세 차트를 확인할 종목을 선택하세요", current_stocks)
+else:
+    selected_stock = "삼성전자"
 
 ticker_map = {
     "아난티": "025980.KS",
