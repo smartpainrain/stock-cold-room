@@ -37,7 +37,7 @@ with col_h2:
 
 st.divider()
 
-# 티커 변환 헬퍼 함수
+# 티커 사전 및 헬퍼
 TICKER_DICT = {
     "삼성전자": "005930.KS",
     "sk하이닉스": "000660.KS",
@@ -56,47 +56,87 @@ TICKER_DICT = {
 
 def resolve_ticker(name_or_code: str) -> str:
     cleaned = name_or_code.strip().lower().replace(" ", "")
-    # 딕셔너리 매핑 확인
     for k, v in TICKER_DICT.items():
         if k.lower().replace(" ", "") == cleaned:
             return v
-    # 6자리 숫자 코드 직접 입력 시 (.KS 우선 시도)
     if len(cleaned) == 6 and cleaned.isdigit():
         return f"{cleaned}.KS"
     if cleaned.endswith(".ks") or cleaned.endswith(".kq"):
         return cleaned.upper()
     return f"{cleaned}.KS"
 
-def fetch_live_price(ticker: str):
+# 기술적 분석 연산 함수 (20/60일선, RSI 14, 거래량 배수)
+@st.cache_data(ttl=300)
+def analyze_technical_signals(ticker: str):
+    default_res = {"현재가": 0, "RSI": 50.0, "20일이격": 100.0, "추천": "🟡 관망"}
     try:
-        data = yf.Ticker(ticker).history(period="1d")
-        if not data.empty:
-            return int(data['Close'].iloc[-1])
+        hist = yf.Ticker(ticker).history(period="3mo")
+        if hist.empty or len(hist) < 20:
+            if ticker.endswith(".KS"):
+                alt_ticker = ticker.replace(".KS", ".KQ")
+                hist = yf.Ticker(alt_ticker).history(period="3mo")
+            if hist.empty or len(hist) < 20:
+                return default_res
+
+        close = hist['Close']
+        volume = hist['Volume']
+        current_price = int(close.iloc[-1])
+
+        # 이동평균선
+        ma20 = close.rolling(window=20).mean().iloc[-1]
+        ma60 = close.rolling(window=60).mean().iloc[-1] if len(close) >= 60 else ma20
+        disp20 = (current_price / ma20) * 100
+
+        # RSI 14
+        delta = close.diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.rolling(window=14).mean()
+        avg_loss = loss.rolling(window=14).mean()
+        rs = avg_gain / avg_loss.replace(0, 0.0001)
+        rsi_series = 100 - (100 / (1 + rs))
+        current_rsi = float(rsi_series.iloc[-1]) if not pd.isna(rsi_series.iloc[-1]) else 50.0
+
+        # 거래량 배수 (당일 vs 5일 평균)
+        vol_ma5 = volume.iloc[-6:-1].mean() if len(volume) >= 6 else volume.mean()
+        vol_ratio = (volume.iloc[-1] / vol_ma5) if vol_ma5 > 0 else 1.0
+
+        # 정량 스코어링 기반 추천 판정
+        rec = "🟡 관망"
+        if current_rsi >= 75:
+            rec = "🔴 매도"
+        elif current_price < ma20 and current_price < ma60 and current_rsi > 50:
+            rec = "🔴 매도"
+        elif current_rsi <= 30:
+            rec = "🔥 강력 매수"
+        elif (current_price >= ma60) and (98.0 <= disp20 <= 103.0) and (vol_ratio >= 1.5):
+            rec = "🔥 강력 매수"
+        elif (current_price >= ma20) and (35.0 <= current_rsi <= 55.0):
+            rec = "🟢 매수"
+        elif current_rsi <= 38:
+            rec = "🟢 매수"
+
+        return {
+            "현재가": current_price,
+            "RSI": round(current_rsi, 1),
+            "20일이격": round(disp20, 1),
+            "추천": rec
+        }
     except Exception:
-        pass
-    # KS 실패 시 KQ 시도
-    if ticker.endswith(".KS"):
-        try:
-            alt_ticker = ticker.replace(".KS", ".KQ")
-            data = yf.Ticker(alt_ticker).history(period="1d")
-            if not data.empty:
-                return int(data['Close'].iloc[-1])
-        except Exception:
-            pass
-    return 0
+        return default_res
 
-# 2. 세션 상태 초기화 (불필요한 컬럼 완전 제거)
-TARGET_COLUMNS = ["종목명", "티커", "현재가"]
+# 2. 세션 상태 초기화
+BASE_COLUMNS = ["종목명", "티커", "단가", "수량"]
 
-if 'stock_df' not in st.session_state or any(c not in st.session_state.stock_df.columns for c in TARGET_COLUMNS) or "보유비중(%)" in st.session_state.stock_df.columns:
+if 'stock_df' not in st.session_state or any(c not in st.session_state.stock_df.columns for c in BASE_COLUMNS):
     st.session_state.stock_df = pd.DataFrame([
-        {"종목명": "삼성전자", "티커": "005930.KS", "현재가": fetch_live_price("005930.KS")},
-        {"종목명": "SK하이닉스", "티커": "000660.KS", "현재가": fetch_live_price("000660.KS")},
-        {"종목명": "한화에어로스페이스", "티커": "012450.KS", "현재가": fetch_live_price("012450.KS")},
+        {"종목명": "삼성전자", "티커": "005930.KS", "단가": 70000, "수량": 50},
+        {"종목명": "SK하이닉스", "티커": "000660.KS", "단가": 170000, "수량": 20},
+        {"종목명": "한화에어로스페이스", "티커": "012450.KS", "단가": 290000, "수량": 10},
     ])
 
-# 3. 실시간 종목 등록 폼 (종목명만 입력)
-st.markdown("#### 🎯 실시간 종목 모니터링")
+# 3. 신규 종목 등록 폼
+st.markdown("#### 🎯 실시간 기술적 분석 관제탑")
 
 with st.form("add_stock_form", clear_on_submit=True):
     col_input, col_btn = st.columns([3, 1])
@@ -108,29 +148,55 @@ with st.form("add_stock_form", clear_on_submit=True):
     
     if submitted and input_name.strip():
         resolved = resolve_ticker(input_name)
-        price = fetch_live_price(resolved)
-        
-        # 코스닥 대체 확인으로 티커 조정
-        if price > 0 and resolved.endswith(".KS"):
-            test_data = yf.Ticker(resolved).history(period="1d")
-            if test_data.empty:
-                resolved = resolved.replace(".KS", ".KQ")
-
         new_row = pd.DataFrame([{
             "종목명": input_name.strip(),
             "티커": resolved,
-            "현재가": price
+            "단가": 0,
+            "수량": 0
         }])
-        
         st.session_state.stock_df = pd.concat([st.session_state.stock_df, new_row], ignore_index=True)
         st.rerun()
 
-# 4. 종목 모니터링 표 (종목명, 티커, 현재가만 표시)
-display_df = st.session_state.stock_df[TARGET_COLUMNS].copy()
-edited_df = st.data_editor(display_df, num_rows="dynamic", use_container_width=True, hide_index=True)
-st.session_state.stock_df = edited_df
+# 4. 기술적 지표 실시간 계산 및 테이블 바인딩
+display_rows = []
+for idx, row in st.session_state.stock_df.iterrows():
+    sig = analyze_technical_signals(row['티커'])
+    display_rows.append({
+        "종목명": row["종목명"],
+        "티커": row["티커"],
+        "현재가": sig["현재가"],
+        "단가": row["단가"],
+        "수량": row["수량"],
+        "20일이격": f"{sig['20일이격']}%",
+        "RSI": sig["RSI"],
+        "추천": sig["추천"]
+    })
 
-# 5. 종목 삭제 영역
+display_df = pd.DataFrame(display_rows)
+
+st.caption("20/60일선 추세, 14일 RSI, 거래량 폭증 여부를 종합 산출한 기술적 추천 지표입니다. 단가와 수량을 수정할 수 있습니다.")
+
+edited_df = st.data_editor(
+    display_df,
+    column_config={
+        "종목명": st.column_config.TextColumn(disabled=True),
+        "티커": st.column_config.TextColumn(disabled=True),
+        "현재가": st.column_config.NumberColumn(format="%d 원", disabled=True),
+        "단가": st.column_config.NumberColumn(format="%d 원", min_value=0),
+        "수량": st.column_config.NumberColumn(min_value=0, step=1),
+        "20일이격": st.column_config.TextColumn(disabled=True),
+        "RSI": st.column_config.NumberColumn(disabled=True),
+        "추천": st.column_config.TextColumn(disabled=True),
+    },
+    use_container_width=True,
+    hide_index=True
+)
+
+# 단가 및 수량 입력값 세션 동기화
+st.session_state.stock_df["단가"] = edited_df["단가"]
+st.session_state.stock_df["수량"] = edited_df["수량"]
+
+# 5. 종목 삭제 관리
 st.markdown("<br>", unsafe_allow_html=True)
 st.markdown("#### 🗑️ 종목 삭제")
 if not st.session_state.stock_df.empty:
@@ -145,7 +211,7 @@ if not st.session_state.stock_df.empty:
                 st.session_state.stock_df = st.session_state.stock_df[st.session_state.stock_df["종목명"] != stock_to_delete].reset_index(drop=True)
                 st.rerun()
 
-# 6. 개별 종목 3개월 종가 추이 차트
+# 6. 개별 종목 3개월 시계열 차트
 st.markdown("<br>", unsafe_allow_html=True)
 st.markdown("#### 📈 종목별 3개월 종가 추이")
 current_stocks = st.session_state.stock_df["종목명"].dropna().tolist()
