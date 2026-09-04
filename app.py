@@ -49,7 +49,7 @@ st.markdown("<br>", unsafe_allow_html=True)
 # 3. 세션 상태 초기화 (종목 데이터)
 if 'stock_df' not in st.session_state:
     st.session_state.stock_df = pd.DataFrame({
-        "종목명": ["아난티", "한화에어로ส페이스", "대아티아이", "마이크로컨텍솔", "삼양식품", "셀트리온"],
+        "종목명": ["아난티", "한화에어로스페이스", "대아티아이", "마이크로컨텍솔", "삼양식품", "셀트리온"],
         "티커": ["025980.KS", "012450.KS", "045390.KQ", "098120.KQ", "003230.KS", "068270.KS"],
         "현재가": [5500, 1164000, 3455, 40900, 1341000, 194600],
         "보유비중(%)": [10.0, 30.0, 10.0, 15.0, 25.0, 10.0],
@@ -57,53 +57,71 @@ if 'stock_df' not in st.session_state:
         "매집단계": ["L1", "L4", "L1", "L1", "L4", "L6"]
     })
 
-st.markdown("#### 🎯 실시간 종목 모니터링 및 현재가 자동 조회")
+st.markdown("#### 🎯 실시간 종목 모니터링 및 간편 등록")
+st.caption("주요 종목은 이름만 넣어도 자동 조회되며, 아래 표에서 직접 값을 수정하거나 행을 추가/삭제할 수 있습니다.")
 
-# --- 실시간 종목 추가 폼 (야후 파이낸스 연동) ---
+# --- 간편 종목 추가 폼 (자동 매핑 및 수동 보완) ---
+# 자주 쓰는 종목 자동 매핑 사전
+name_to_ticker = {
+    "삼성전자": "005930.KS",
+    "SK하이닉스": "000660.KS",
+    "아난티": "025980.KS",
+    "한화에어로스페이스": "012450.KS",
+    "대아티아이": "045390.KQ",
+    "마이크로컨텍솔": "098120.KQ",
+    "삼양식품": "003230.KS",
+    "셀트리온": "068270.KS",
+    "LG에너지솔루션": "373220.KS"
+}
+
 with st.form("add_stock_form", clear_on_submit=True):
-    st.markdown("**➕ 새 종목 실시간 등록**")
-    f_col1, f_col2, f_col3, f_col4, f_col5 = st.columns(5)
+    f_col1, f_col2, f_col3, f_col4 = st.columns(4)
     
     with f_col1:
-        input_name = st.text_input("종목명", placeholder="예: 삼성전자")
+        input_name = st.text_input("종목명", placeholder="예: 삼성전자 또는 직접입력")
     with f_col2:
-        input_ticker = st.text_input("티커 (야후 기준)", placeholder="예: 005930.KS")
-    with f_col3:
         input_weight = st.number_input("보유비중(%)", min_value=0.0, max_value=100.0, value=10.0)
-    with f_col4:
+    with f_col3:
         input_alpha = st.number_input("초과수익(α %)", value=1.0)
-    with f_col5:
+    with f_col4:
         input_stage = st.selectbox("매집단계", ["L1", "L2", "L3", "L4", "L5", "L6"])
         
-    submitted = st.form_submit_button("실시간 현재가 조회 및 추가")
+    submitted = st.form_submit_button("종목 추가 및 현재가 자동 조회")
     
-    if submitted and input_name and input_ticker:
-        try:
-            # 야후 파이낸스에서 실시간 현재가 긁어오기
-            live_data = yf.Ticker(input_ticker).history(period="1d")
-            if not live_data.empty:
-                current_price = int(live_data['Close'].iloc[-1])
+    if submitted and input_name:
+        # 사전에 있으면 티커 자동 할당, 없으면 사용자가 입력한 값이나 기본값 처리
+        ticker = name_to_ticker.get(input_name, "")
+        current_price = 0
+        
+        if ticker:
+            try:
+                live_data = yf.Ticker(ticker).history(period="1d")
+                if not live_data.empty:
+                    current_price = int(live_data['Close'].iloc[-1])
+            except:
+                pass
                 
-                new_row = pd.DataFrame({
-                    "종목명": [input_name],
-                    "티커": [input_ticker.strip()],
-                    "현재가": [current_price],
-                    "보유비중(%)": [input_weight],
-                    "초과수익(α)": [input_alpha],
-                    "매집단계": [input_stage]
-                })
-                
-                st.session_state.stock_df = pd.concat([st.session_state.stock_df, new_row], ignore_index=True)
-                st.success(f"'{input_name}' 종목이 실시간 현재가({current_price:,}원)로 등록되었습니다!")
-                st.rerun()
-            else:
-                st.error("해당 티커의 시세 정보를 불러올 수 없습니다. 티커를 확인해주세요. (예: 005930.KS)")
-        except Exception as e:
-            st.error(f"조회 중 에러 발생: {e}")
+        # 자동 조회가 안 되었을 경우 기본값 지정 (표에서 나중에 직접 수정 가능)
+        if current_price == 0:
+            ticker = ticker if ticker else "005930.KS"
+            current_price = 10000  # 기본 임시가 (표에서 바로 수정 가능)
+            
+        new_row = pd.DataFrame({
+            "종목명": [input_name],
+            "티커": [ticker],
+            "현재가": [current_price],
+            "보유비중(%)": [input_weight],
+            "초과수익(α)": [input_alpha],
+            "매집단계": [input_stage]
+        })
+        
+        st.session_state.stock_df = pd.concat([st.session_state.stock_df, new_row], ignore_index=True)
+        st.success(f"'{input_name}' 종목이 추가되었습니다! (현재가: {current_price:,}원 - 표에서 직접 수정 가능)")
+        st.rerun()
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# 데이터 편집기 (수정 및 삭제 가능)
+# 데이터 편집기 (여기서 현재가, 비중, 매집단계 등을 내 손으로 직접 자유롭게 수정 가능)
 edited_df = st.data_editor(st.session_state.stock_df, num_rows="dynamic", use_container_width=True, hide_index=True)
 st.session_state.stock_df = edited_df
 
@@ -116,7 +134,6 @@ current_stocks = st.session_state.stock_df["종목명"].dropna().tolist()
 if current_stocks:
     selected_stock = st.selectbox("상세 차트를 확인할 종목을 선택하세요", current_stocks)
     
-    # 선택한 종목의 티커 매핑 찾기
     matched_row = st.session_state.stock_df[st.session_state.stock_df["종목명"] == selected_stock]
     if not matched_row.empty and "티커" in matched_row.columns:
         target_ticker = matched_row["티커"].values[0]
@@ -129,7 +146,7 @@ else:
 @st.cache_data(ttl=300)
 def load_chart_data(ticker):
     try:
-        data = yf.Ticker(ticker).history(period="3mo")
+        data = yf.Ticker(str(ticker)).history(period="3mo")
         return data['Close']
     except Exception:
         return pd.Series()
@@ -140,4 +157,4 @@ if not chart_data.empty:
     st.line_chart(chart_data)
     st.caption(f"* {selected_stock} ({target_ticker}) 최근 3개월 종가 추이 (실시간 연동)")
 else:
-    st.info("해당 종목의 시세 데이터를 불러오는 중이거나 티커 형식이 올바르지 않습니다.")
+    st.info("해당 종목의 시세 데이터를 불러오는 중이거나 유효하지 않은 티커입니다. 표의 '티커' 칸을 올바른 야후 티커(예: 005930.KS)로 수정해 보세요.")
