@@ -37,7 +37,7 @@ with col_h2:
 
 st.divider()
 
-# 2. 세션 상태 초기화 (매수 단가, 매수 수량, 추천 상태 반영)
+# 2. 세션 상태 초기화
 if 'stock_df' not in st.session_state:
     st.session_state.stock_df = pd.DataFrame({
         "종목명": ["아난티", "한화에어로스페이스", "대아티아이", "마이크로컨텍솔", "삼양식품", "셀트리온"],
@@ -48,21 +48,26 @@ if 'stock_df' not in st.session_state:
         "추천": ["매수", "관망", "매수", "매수", "관망", "매도"]
     })
 
-# 자산 및 손익 계산 로직
-df = st.session_state.stock_df
+# 데이터 연산 및 파생 컬럼 생성 (평가금액, 손익, 수익률)
+df = st.session_state.stock_df.copy()
 try:
     df['현재가'] = pd.to_numeric(df['현재가'], errors='coerce').fillna(0)
     df['매수 단가'] = pd.to_numeric(df['매수 단가'], errors='coerce').fillna(0)
     df['매수 수량'] = pd.to_numeric(df['매수 수량'], errors='coerce').fillna(0)
     
-    total_eval = (df['현재가'] * df['매수 수량']).sum()
-    total_invest = (df['매수 단가'] * df['매수 수량']).sum()
-    total_profit = total_eval - total_invest
+    df['평가금액'] = df['현재가'] * df['매수 수량']
+    df['투자원금'] = df['매수 단가'] * df['매수 수량']
+    df['평가손익'] = df['평가금액'] - df['투자원금']
+    df['수익률(%)'] = ((df['평가손익'] / df['투자원금']) * 100).round(2)
+    
+    total_eval = df['평가금액'].sum()
+    total_invest = df['투자원금'].sum()
+    total_profit = df['평가손익'].sum()
     total_return_pct = (total_profit / total_invest * 100) if total_invest > 0 else 0.0
 except:
     total_eval, total_invest, total_profit, total_return_pct = 0, 0, 0, 0.0
 
-# 요약 카드 동적 렌더링
+# 요약 카드 렌더링
 col_m1, col_m2, col_m3, col_m4 = st.columns(4)
 col_m1.metric(label="총 평가 자산", value=f"{total_eval:,.0f} 원", delta=f"{total_profit:+,.0f} 원")
 col_m2.metric(label="총 투자 원금", value=f"{total_invest:,.0f} 원")
@@ -71,6 +76,7 @@ col_m4.metric(label="관제 종목 수", value=f"{len(df)}개")
 
 st.markdown("<br>", unsafe_allow_html=True)
 
+# 3. 실시간 종목 모니터링 및 관리 테이블
 st.markdown("#### 🎯 실시간 종목 모니터링 및 관리")
 st.caption("표에서 매수 단가, 수량, 추천 상태 등을 직접 수정할 수 있습니다.")
 
@@ -86,10 +92,9 @@ name_to_ticker = {
     "LG에너지솔루션": "373220.KS"
 }
 
-# --- 종목 추가 폼 ---
+# 종목 추가 폼
 with st.form("add_stock_form", clear_on_submit=True):
     f_col1, f_col2, f_col3, f_col4 = st.columns(4)
-    
     with f_col1:
         input_name = st.text_input("종목명", placeholder="예: 삼성전자")
     with f_col2:
@@ -104,7 +109,6 @@ with st.form("add_stock_form", clear_on_submit=True):
     if submitted and input_name:
         ticker = name_to_ticker.get(input_name, "005930.KS")
         current_price = input_buy_price
-        
         try:
             live_data = yf.Ticker(ticker).history(period="1d")
             if not live_data.empty:
@@ -127,11 +131,11 @@ with st.form("add_stock_form", clear_on_submit=True):
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# 데이터 편집기 (값 직접 수정 가능)
+# 데이터 편집기
 edited_df = st.data_editor(st.session_state.stock_df, num_rows="dynamic", use_container_width=True, hide_index=True)
 st.session_state.stock_df = edited_df
 
-# --- 종목 삭제 기능 영역 ---
+# 종목 삭제 영역
 st.markdown("<br>", unsafe_allow_html=True)
 st.markdown("#### 🗑️ 종목 삭제 관리")
 if not st.session_state.stock_df.empty:
@@ -147,13 +151,34 @@ if not st.session_state.stock_df.empty:
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# 4. 인터랙티브 차트 드릴다운
-st.markdown("#### 📈 종목별 심층 시계열 분석")
+# 4. 고급 포트폴리오 다차원 분석 시각화
+st.markdown("#### 📊 포트폴리오 다차원 분석")
+an_col1, an_col2 = st.columns(2)
 
+with an_col1:
+    st.markdown("**종목별 자산 비중 (평가금액 기준)**")
+    if not df.empty and total_eval > 0:
+        df['비중(%)'] = (df['평가금액'] / total_eval * 100).round(1)
+        allocation_chart_data = df.set_index("종목명")["비중(%)"]
+        st.bar_chart(allocation_chart_data)
+    else:
+        st.info("데이터가 부족합니다.")
+
+with an_col2:
+    st.markdown("**종목별 평가 손익 (원)**")
+    if not df.empty:
+        pnl_chart_data = df.set_index("종목명")["평가손익"]
+        st.bar_chart(pnl_chart_data)
+    else:
+        st.info("데이터가 부족합니다.")
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# 5. 인터랙티브 차트 드릴다운
+st.markdown("#### 📈 종목별 심층 시계열 분석")
 current_stocks = st.session_state.stock_df["종목명"].dropna().tolist()
 if current_stocks:
     selected_stock = st.selectbox("상세 차트를 확인할 종목을 선택하세요", current_stocks)
-    
     matched_row = st.session_state.stock_df[st.session_state.stock_df["종목명"] == selected_stock]
     if not matched_row.empty and "티커" in matched_row.columns:
         target_ticker = matched_row["티커"].values[0]
@@ -177,4 +202,4 @@ if not chart_data.empty:
     st.line_chart(chart_data)
     st.caption(f"* {selected_stock} ({target_ticker}) 최근 3개월 종가 추이 (실시간 연동)")
 else:
-    st.info("해당 종목의 시세 데이터를 불러오는 중이거나 유효하지 않은 티커입니다. 표의 '티커' 칸을 올바른 야후 티커(예: 005930.KS)로 수정해 보세요.")
+    st.info("해당 종목의 시세 데이터를 불러오는 중이거나 유효하지 않은 티커입니다.")
