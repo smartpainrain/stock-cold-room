@@ -4,11 +4,36 @@ import datetime
 from zoneinfo import ZoneInfo
 import requests
 import yfinance as yf
+import json
+import os
+
+DATA_FILE = "portfolio.json"
+
+# 영구 저장소(JSON 파일) 로드 및 저장 함수
+def load_portfolio():
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return pd.DataFrame(data)
+        except Exception:
+            pass
+    # 파일이 없거나 깨졌을 때 기본값
+    default_df = pd.DataFrame([
+        {"종목명": "삼성전자", "코드": "005930", "매수가": 72000},
+        {"종목명": "SK하이닉스", "코드": "000660", "매수가": 165000},
+        {"종목명": "한화에어로스페이스", "코드": "012450", "매수가": 310000},
+    ])
+    save_portfolio(default_df)
+    return default_df
+
+def save_portfolio(df):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(df.to_dict(orient="records"), f, ensure_ascii=False, indent=2)
 
 # 1. 상단 타이틀 및 KST 실시간 시각
 st.markdown("### stock-cold-room", unsafe_allow_html=True)
 
-# 네이버 실시간 코스피 지수 조회
 @st.cache_data(ttl=15)
 def get_kospi_data():
     try:
@@ -22,7 +47,6 @@ def get_kospi_data():
         sign = "+" if float(diff.replace(",", "")) > 0 else ""
         return f"KOSPI: {cur} ({sign}{diff}, {sign}{rate}%)"
     except Exception:
-        # Fallback to yfinance
         try:
             k = yf.Ticker("^KS11").history(period="2d")
             if len(k) >= 2:
@@ -47,7 +71,7 @@ with col_h2:
 
 st.divider()
 
-# 종목명/코드 사전
+# 종목명/코드 매핑 사전
 TICKER_DICT = {
     "삼성전자": "005930",
     "sk하이닉스": "000660",
@@ -74,7 +98,6 @@ def resolve_code(name_or_code: str) -> str:
     cleaned = cleaned.replace(".ks", "").replace(".kq", "")
     return cleaned
 
-# 네이버 실시간 주가 조회 (0초 딜레이 초고속)
 @st.cache_data(ttl=15)
 def fetch_naver_realtime_price(code: str) -> int:
     try:
@@ -88,7 +111,6 @@ def fetch_naver_realtime_price(code: str) -> int:
         pass
     return 0
 
-# 기술적 분석 연산 함수 (20/60일선, RSI 14)
 @st.cache_data(ttl=60)
 def analyze_technical_signals(code: str, cur_price: int):
     default_res = {"RSI": 50.0, "20일이격": 100.0, "추천": "🟡 관망"}
@@ -105,12 +127,10 @@ def analyze_technical_signals(code: str, cur_price: int):
         volume = hist['Volume']
         current_price = cur_price if cur_price > 0 else int(close.iloc[-1])
 
-        # 이동평균선
         ma20 = close.rolling(window=20).mean().iloc[-1]
         ma60 = close.rolling(window=60).mean().iloc[-1] if len(close) >= 60 else ma20
         disp20 = (current_price / ma20) * 100
 
-        # RSI 14
         delta = close.diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
@@ -120,11 +140,9 @@ def analyze_technical_signals(code: str, cur_price: int):
         rsi_series = 100 - (100 / (1 + rs))
         current_rsi = float(rsi_series.iloc[-1]) if not pd.isna(rsi_series.iloc[-1]) else 50.0
 
-        # 거래량 배수
         vol_ma5 = volume.iloc[-6:-1].mean() if len(volume) >= 6 else volume.mean()
         vol_ratio = (volume.iloc[-1] / vol_ma5) if vol_ma5 > 0 else 1.0
 
-        # 정량 스코어링
         rec = "🟡 관망"
         if current_rsi >= 75:
             rec = "🔴 매도"
@@ -147,14 +165,9 @@ def analyze_technical_signals(code: str, cur_price: int):
     except Exception:
         return default_res
 
-# 2. 세션 상태 초기화
-BASE_COLUMNS = ["종목명", "코드", "매수가"]
-if 'stock_df' not in st.session_state or any(c not in st.session_state.stock_df.columns for c in BASE_COLUMNS):
-    st.session_state.stock_df = pd.DataFrame([
-        {"종목명": "삼성전자", "코드": "005930", "매수가": 72000},
-        {"종목명": "SK하이닉스", "코드": "000660", "매수가": 165000},
-        {"종목명": "한화에어로스페이스", "코드": "012450", "매수가": 310000},
-    ])
+# 2. 영구 파일 기반 포트폴리오 로드
+if 'stock_df' not in st.session_state:
+    st.session_state.stock_df = load_portfolio()
 
 # 3. 신규 종목 등록 폼
 st.markdown("#### 🎯 종목 모니터링 (네이버 실시간 시세 연동)")
@@ -177,14 +190,19 @@ with st.form("add_stock_form", clear_on_submit=True):
             "매수가": int(input_buy)
         }])
         st.session_state.stock_df = pd.concat([st.session_state.stock_df, new_row], ignore_index=True)
+        save_portfolio(st.session_state.stock_df)  # 파일 영구 저장
         st.rerun()
 
-# 4. 데이터 에디터 매수가 변경사항 선반영
+# 4. 데이터 에디터 매수가 변경사항 선반영 및 파일 영구 저장
 if "stock_editor" in st.session_state and "edited_rows" in st.session_state["stock_editor"]:
     edited_rows = st.session_state["stock_editor"]["edited_rows"]
+    modified = False
     for row_idx, changes in edited_rows.items():
         if "매수가" in changes:
             st.session_state.stock_df.at[int(row_idx), "매수가"] = int(changes["매수가"])
+            modified = True
+    if modified:
+        save_portfolio(st.session_state.stock_df)
 
 # 5. 실시간 가격 및 기술적 지표 계산
 display_rows = []
@@ -194,7 +212,6 @@ for idx, row in st.session_state.stock_df.iterrows():
     sig = analyze_technical_signals(code, cur_p)
     buy_p = int(row["매수가"])
     
-    # 수익률 계산
     if buy_p > 0 and cur_p > 0:
         ret_rate = ((cur_p - buy_p) / buy_p) * 100
         if ret_rate > 0:
@@ -219,9 +236,8 @@ for idx, row in st.session_state.stock_df.iterrows():
 
 display_df = pd.DataFrame(display_rows)
 
-st.caption("⚡ 네이버페이 증권 실시간 체결가 기준으로 15초마다 자동 갱신됩니다. 매수가 셀을 더블클릭해 직접 수정할 수 있습니다.")
+st.caption("⚡ 네이버페이 증권 실시간 체결가 기준으로 자동 갱신됩니다. 매수가 수정/삭제 내역은 새로고침해도 영구 보존됩니다.")
 
-# 데이터 에디터
 st.data_editor(
     display_df,
     key="stock_editor",
@@ -239,7 +255,7 @@ st.data_editor(
     hide_index=True
 )
 
-# 6. 종목 삭제 관리
+# 6. 종목 삭제 관리 (영구 삭제 적용)
 st.markdown("<br>", unsafe_allow_html=True)
 st.markdown("#### 🗑️ 종목 삭제")
 if not st.session_state.stock_df.empty:
@@ -252,6 +268,7 @@ if not st.session_state.stock_df.empty:
             st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
             if st.button("선택 종목 삭제"):
                 st.session_state.stock_df = st.session_state.stock_df[st.session_state.stock_df["종목명"] != stock_to_delete].reset_index(drop=True)
+                save_portfolio(st.session_state.stock_df)  # 삭제 후 파일 영구 저장
                 if "stock_editor" in st.session_state:
                     del st.session_state["stock_editor"]
                 st.rerun()
