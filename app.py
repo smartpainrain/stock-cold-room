@@ -65,7 +65,7 @@ def resolve_ticker(name_or_code: str) -> str:
         return cleaned.upper()
     return f"{cleaned}.KS"
 
-# 기술적 분석 연산 함수 (캐시 60초로 단축하여 실시간성 강화)
+# 기술적 분석 연산 함수 (캐시 60초)
 @st.cache_data(ttl=60)
 def analyze_technical_signals(ticker: str):
     default_res = {"현재가": 0, "RSI": 50.0, "20일이격": 100.0, "추천": "🟡 관망"}
@@ -101,7 +101,7 @@ def analyze_technical_signals(ticker: str):
         vol_ma5 = volume.iloc[-6:-1].mean() if len(volume) >= 6 else volume.mean()
         vol_ratio = (volume.iloc[-1] / vol_ma5) if vol_ma5 > 0 else 1.0
 
-        # 정량 스코어링 기반 추천 판정
+        # 정량 스코어링
         rec = "🟡 관망"
         if current_rsi >= 75:
             rec = "🔴 매도"
@@ -125,9 +125,8 @@ def analyze_technical_signals(ticker: str):
     except Exception:
         return default_res
 
-# 2. 세션 상태 초기화 (종목명, 티커, 매수가)
+# 2. 세션 상태 초기화
 BASE_COLUMNS = ["종목명", "티커", "매수가"]
-
 if 'stock_df' not in st.session_state or any(c not in st.session_state.stock_df.columns for c in BASE_COLUMNS):
     st.session_state.stock_df = pd.DataFrame([
         {"종목명": "삼성전자", "티커": "005930.KS", "매수가": 72000},
@@ -153,19 +152,27 @@ with st.form("add_stock_form", clear_on_submit=True):
         new_row = pd.DataFrame([{
             "종목명": input_name.strip(),
             "티커": resolved,
-            "매수가": input_buy
+            "매수가": int(input_buy)
         }])
         st.session_state.stock_df = pd.concat([st.session_state.stock_df, new_row], ignore_index=True)
         st.rerun()
 
-# 4. 기술적 지표 및 수익률 실시간 연산
+# 4. 데이터 에디터 변경사항 선반영 처리
+# 이전 렌더링에서 st.data_editor를 통해 수정된 매수가가 있다면 세션 df에 즉각 반영
+if "stock_editor" in st.session_state and "edited_rows" in st.session_state["stock_editor"]:
+    edited_rows = st.session_state["stock_editor"]["edited_rows"]
+    for row_idx, changes in edited_rows.items():
+        if "매수가" in changes:
+            st.session_state.stock_df.at[int(row_idx), "매수가"] = int(changes["매수가"])
+
+# 5. 기술적 지표 및 수익률 연산 (수정된 매수가 기반)
 display_rows = []
 for idx, row in st.session_state.stock_df.iterrows():
     sig = analyze_technical_signals(row['티커'])
     cur_p = sig["현재가"]
-    buy_p = row["매수가"]
+    buy_p = int(row["매수가"])
     
-    # 수익률 계산 및 컬러 텍스트 포맷 (상승: 빨간색, 하락: 파란색)
+    # 수익률 계산 (상승: 🔺 빨간색 느낌, 하락: 🔻 파란색 느낌)
     if buy_p > 0 and cur_p > 0:
         ret_rate = ((cur_p - buy_p) / buy_p) * 100
         if ret_rate > 0:
@@ -190,11 +197,12 @@ for idx, row in st.session_state.stock_df.iterrows():
 
 display_df = pd.DataFrame(display_rows)
 
-st.caption("매수가를 입력하면 현재가와 비교하여 수익률(%)이 실시간 산출됩니다. 매수가 셀을 더블클릭하여 직접 수정할 수 있습니다.")
+st.caption("매수가 셀을 더블클릭하여 수정 후 엔터를 누르면 수익률과 추천이 즉시 갱신·보존됩니다.")
 
-# 데이터 에디터 (매수가만 편집 가능)
-edited_df = st.data_editor(
+# 데이터 에디터에 key='stock_editor' 연결
+edited_output = st.data_editor(
     display_df,
+    key="stock_editor",
     column_config={
         "종목명": st.column_config.TextColumn(disabled=True),
         "티커": st.column_config.TextColumn(disabled=True),
@@ -209,10 +217,7 @@ edited_df = st.data_editor(
     hide_index=True
 )
 
-# 매수가 수정 시 세션 데이터 동기화
-st.session_state.stock_df["매수가"] = edited_df["매수가"]
-
-# 5. 종목 삭제 관리
+# 6. 종목 삭제 관리
 st.markdown("<br>", unsafe_allow_html=True)
 st.markdown("#### 🗑️ 종목 삭제")
 if not st.session_state.stock_df.empty:
@@ -225,9 +230,11 @@ if not st.session_state.stock_df.empty:
             st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
             if st.button("선택 종목 삭제"):
                 st.session_state.stock_df = st.session_state.stock_df[st.session_state.stock_df["종목명"] != stock_to_delete].reset_index(drop=True)
+                if "stock_editor" in st.session_state:
+                    del st.session_state["stock_editor"]
                 st.rerun()
 
-# 6. 개별 종목 3개월 시계열 차트
+# 7. 개별 종목 3개월 시계열 차트
 st.markdown("<br>", unsafe_allow_html=True)
 st.markdown("#### 📈 종목별 3개월 종가 추이")
 current_stocks = st.session_state.stock_df["종목명"].dropna().tolist()
