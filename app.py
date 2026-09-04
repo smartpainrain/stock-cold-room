@@ -3,10 +3,10 @@ import pandas as pd
 import pymysql
 import datetime
 
-# 페이지 설정 (브라우저 탭 제목)
+# 🚨 무조건 이 코드가 파일의 가장 첫 번째(최상단)에 와야 함!
 st.set_page_config(page_title="stock-cold-room", page_layout="wide")
 
-# 상단 헤더 (군더더기 없이 깔끔하게 수정)
+# 상단 헤더
 st.markdown("### stock-cold-room 🚀 <span style='color:orange; font-size:16px;'>코스피 S8 하락지속</span>", unsafe_allow_html=True)
 
 col1, col2 = st.columns([1, 2])
@@ -22,7 +22,6 @@ st.divider()
 @st.cache_data(ttl=60)
 def load_stock_data():
     try:
-        # Streamlit 시크릿 설정에서 카페24 DB 정보 가져오기
         connection = pymysql.connect(
             host=st.secrets["mysql"]["host"],
             user=st.secrets["mysql"]["user"],
@@ -36,7 +35,6 @@ def load_stock_data():
             result = cursor.fetchall()
             return pd.DataFrame(result)
     except Exception as e:
-        # DB 연결 전이거나 설정 전일 때 보여줄 기본 대체 데이터
         st.warning(f"DB 연결 대기 중 (기본 데이터 표시): {e}")
         fallback_data = {
             "종목명": ["아난티", "한화에어로스페이스", "대아티아이", "마이크로컨텍솔", "삼양식품", "셀트리온"],
