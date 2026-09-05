@@ -103,7 +103,7 @@ def save_to_github(df):
         return False
 
 # -------------------------------------------------------------
-# 2. 실시간 종합 분석 엔진 (초고속 데스크톱 API)
+# 2. 실시간 종합 분석 엔진
 # -------------------------------------------------------------
 TICKER_DICT = {
     "삼성전자": "005930", "sk하이닉스": "000660", "한화에어로스페이스": "012450", 
@@ -219,7 +219,7 @@ def fetch_full_stock_analysis(code: str, buy_price: int):
         ret = ((default_res["현재가"] - buy_price) / buy_price) * 100
         default_res["수익"] = f"🔺 +{ret:.2f}%" if ret > 0 else (f"🔻 {ret:.2f}%" if ret < 0 else "0.00%")
 
-    # 6. 스나이퍼 텔레그램 발송 (당일 중복 발송 방지)
+    # 6. 스나이퍼 텔레그램 발송
     alert_key = f"alert_{code}_{datetime.datetime.now().strftime('%Y%m%d')}"
     if default_res["추천"] == "🔥 강력 매수" and alert_key not in st.session_state:
         send_telegram_alert(f"🎯 [Stock Cold-Room 시그널]\n종목코드: {code}\n상태: 🔥 강력 매수 구간 (RSI: {default_res['RSI']})\n수급: {default_res['수급']}")
@@ -305,7 +305,7 @@ display_df = pd.DataFrame(display_rows)
 
 last_sync = st.session_state.get("last_sync_time")
 sync_label = f" | 💾 GitHub 동기화 완료: {last_sync}" if last_sync else ""
-st.caption(f"⚡ 네이버 금융 초고속 수급/실적 엔진 연동 완료{sync_label}")
+st.caption(f"⚡ 네이버 금융 연동 완료{sync_label}")
 
 # 체크박스 기반 통합 데이터 에디터
 edited_df = st.data_editor(
@@ -352,7 +352,7 @@ with col_del_btn:
         st.rerun()
 
 # -------------------------------------------------------------
-# 4. 개별 종목 3개월 종가 추이 차트 복원
+# 4. 개별 종목 3개월 종가 추이 차트
 # -------------------------------------------------------------
 st.markdown("<br>", unsafe_allow_html=True)
 st.markdown("#### 📈 종목별 3개월 종가 추이")
