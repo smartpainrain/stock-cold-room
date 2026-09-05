@@ -103,7 +103,7 @@ def save_to_github(df):
         return False
 
 # -------------------------------------------------------------
-# 2. 실시간 종합 분석 엔진
+# 2. 퀀트 멀티 팩터 분석 엔진
 # -------------------------------------------------------------
 TICKER_DICT = {
     "삼성전자": "005930", "sk하이닉스": "000660", "한화에어로스페이스": "012450", 
@@ -132,15 +132,15 @@ def resolve_code(name_or_code):
 @st.cache_data(ttl=30)
 def fetch_full_stock_analysis(code: str):
     default_res = {
-        "현재가": 0, "수급": "관망", "실적": "-", 
-        "20일이격": "-", "RSI": 50.0, "추천": "🟡 관망"
+        "현재가": 0, "수급": "관망", "실적진단": "-", 
+        "20일이격": "-", "RSI": 50.0, "종합의견": "🟡 관망 (50점)"
     }
     if not code:
         return default_res
 
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
-    # 1. 네이버 실시간 체결 데이터
+    # 1. 실시간 가격
     cur_p = 0
     try:
         url_rt = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
@@ -151,7 +151,11 @@ def fetch_full_stock_analysis(code: str):
     except Exception:
         pass
 
-    # 2. 네이버 기본적 지표 (PER / EPS 다중 탐색)
+    # 2. 밸류에이션 팩터 (PER / EPS 정량 분석: 30점 만점)
+    val_score = 15  # 기본 점수
+    val_label = "보통"
+    per_val = None
+    eps_val = None
     try:
         url_intg = f"https://m.stock.naver.com/api/stock/{code}/integration"
         intg_json = requests.get(url_intg, headers=headers, timeout=3).json()
@@ -159,25 +163,53 @@ def fetch_full_stock_analysis(code: str):
         deal_info = intg_json.get("dealInfo", {})
         consensus = intg_json.get("consensusInfo", {})
         
-        per = consensus.get("per") or deal_info.get("per")
-        eps = consensus.get("eps") or deal_info.get("eps")
+        raw_per = consensus.get("per") or deal_info.get("per")
+        raw_eps = consensus.get("eps") or deal_info.get("eps")
         
-        if not per or not eps:
+        if not raw_per or not raw_eps:
             for item in intg_json.get("totalInfos", []):
                 k = item.get("key", "")
                 if "PER" in k:
-                    per = item.get("value")
+                    raw_per = item.get("value")
                 elif "EPS" in k:
-                    eps = item.get("value")
+                    raw_eps = item.get("value")
 
-        if per or eps:
-            per_str = f"PER {per}" if per else ""
-            eps_str = f"EPS {eps}" if eps else ""
-            default_res["실적"] = " / ".join(filter(None, [per_str, eps_str]))
+        if raw_per:
+            try:
+                per_val = float(str(raw_per).replace(",", ""))
+            except Exception:
+                pass
+        if raw_eps:
+            try:
+                eps_val = float(str(raw_eps).replace(",", ""))
+            except Exception:
+                pass
+
+        if per_val is not None:
+            if per_val <= 0:
+                val_score = 5
+                val_label = f"적자기업 (PER {per_val})"
+            elif per_val <= 10.0:
+                val_score = 30
+                val_label = f"🟢 초저평가 (PER {per_val})"
+            elif per_val <= 18.0:
+                val_score = 22
+                val_label = f"적정가치 (PER {per_val})"
+            elif per_val <= 30.0:
+                val_score = 12
+                val_label = f"성장프리미엄 (PER {per_val})"
+            else:
+                val_score = 5
+                val_label = f"🔴 고평가부담 (PER {per_val})"
+        else:
+            val_label = "지표 집계중"
+            
+        default_res["실적진단"] = val_label
     except Exception:
-        pass
+        default_res["실적진단"] = "지표 집계중"
 
-    # 3. 최근 5거래일 외인/기관 순매수 수급 트래커
+    # 3. 수급 팩터 (최근 5일 외인/기관: 35점 만점)
+    flow_score = 10
     try:
         url_inv = f"https://m.stock.naver.com/api/stock/{code}/trend"
         t_json = requests.get(url_inv, headers=headers, timeout=3).json()
@@ -187,17 +219,25 @@ def fetch_full_stock_analysis(code: str):
         orgn_sum = sum(int(str(d.get('organPureBuyQuant', '0')).replace(',', '')) for d in biz_days)
 
         if frgn_sum > 0 and orgn_sum > 0:
+            flow_score = 35
             default_res["수급"] = "🔥 쌍끌이 매수"
         elif frgn_sum < 0 and orgn_sum < 0:
-            default_res["수급"] = "❄️ 양매도"
+            flow_score = 0
+            default_res["수급"] = "❄️ 양매도 이탈"
         elif frgn_sum > 0:
-            default_res["수급"] = "📈 외인 순매수"
+            flow_score = 25
+            default_res["수급"] = "📈 외인 집중매수"
         elif orgn_sum > 0:
+            flow_score = 20
             default_res["수급"] = "🏢 기관 순매수"
+        else:
+            flow_score = 10
+            default_res["수급"] = "중립 수급"
     except Exception:
         pass
 
-    # 4. 차트 기술적 분석 (RSI 및 20일 이격도)
+    # 4. 모멘텀 & 타이밍 팩터 (RSI & 20일선: 35점 만점)
+    tech_score = 15
     try:
         ticker = f"{code}.KS"
         hist = yf.Ticker(ticker).history(period="3mo")
@@ -220,18 +260,43 @@ def fetch_full_stock_analysis(code: str):
             default_res["RSI"] = round(rsi, 1)
 
             if rsi <= 30:
-                default_res["추천"] = "🔥 강력 매수"
+                tech_score = 35  # 극단적 과매도 기회
+            elif current_p >= ma20 and 38.0 <= rsi <= 55.0:
+                tech_score = 30  # 추세 지지 눌림목
+            elif 55.0 < rsi < 70.0:
+                tech_score = 18  # 통상 상승 흐름
             elif rsi >= 75:
-                default_res["추천"] = "🔴 매도"
-            elif current_p >= ma20 and 35.0 <= rsi <= 55.0:
-                default_res["추천"] = "🟢 매수"
+                tech_score = 0   # 단기 과열 경계
+            else:
+                tech_score = 15
     except Exception:
         pass
 
-    # 5. 스나이퍼 텔레그램 발송
+    # 5. 복합 점수 산출 및 최종 투자 의견 매핑
+    total_score = val_score + flow_score + tech_score
+
+    if total_score >= 85:
+        recommendation = f"🔥 강력 매수 ({total_score}점)"
+    elif total_score >= 70:
+        recommendation = f"🟢 매수 ({total_score}점)"
+    elif total_score >= 50:
+        recommendation = f"🟡 관망 ({total_score}점)"
+    else:
+        recommendation = f"🔴 매도 ({total_score}점)"
+
+    default_res["종합의견"] = recommendation
+
+    # 6. 스나이퍼 텔레그램 발송 (85점 이상 시 알림)
     alert_key = f"alert_{code}_{datetime.datetime.now().strftime('%Y%m%d')}"
-    if default_res["추천"] == "🔥 강력 매수" and alert_key not in st.session_state:
-        send_telegram_alert(f"🎯 [Stock Cold-Room 시그널]\n종목코드: {code}\n상태: 🔥 강력 매수 구간 (RSI: {default_res['RSI']})\n수급: {default_res['수급']}")
+    if total_score >= 85 and alert_key not in st.session_state:
+        send_telegram_alert(
+            f"🎯 [Stock Cold-Room 퀀트 포착]\n"
+            f"종목코드: {code}\n"
+            f"종합점수: {total_score}점 (최상위 등급)\n"
+            f"실적: {default_res['실적진단']}\n"
+            f"수급: {default_res['수급']}\n"
+            f"RSI: {default_res['RSI']}"
+        )
         st.session_state[alert_key] = True
 
     return default_res
@@ -268,7 +333,7 @@ st.divider()
 if 'stock_df' not in st.session_state:
     st.session_state.stock_df = load_portfolio()
 
-# 신규 종목 등록 폼 (매수가 입력 제거)
+# 신규 종목 등록 폼
 with st.form("add_stock_form", clear_on_submit=True):
     col_input, col_btn = st.columns([4, 1])
     with col_input:
@@ -287,7 +352,7 @@ with st.form("add_stock_form", clear_on_submit=True):
             save_to_github(st.session_state.stock_df)
             st.rerun()
 
-# 테이블 데이터 생성
+# 테이블 데이터 구성
 display_rows = []
 for idx, row in st.session_state.stock_df.iterrows():
     code = str(row['코드'])
@@ -298,20 +363,20 @@ for idx, row in st.session_state.stock_df.iterrows():
         "종목명": row["종목명"],
         "코드": code,
         "현재가": analyzed["현재가"],
+        "실적진단": analyzed["실적진단"],
         "수급(5일)": analyzed["수급"],
-        "실적전망": analyzed["실적"],
         "20일이격": analyzed["20일이격"],
         "RSI": analyzed["RSI"],
-        "추천": analyzed["추천"]
+        "종합의견": analyzed["종합의견"]
     })
 
 display_df = pd.DataFrame(display_rows)
 
 last_sync = st.session_state.get("last_sync_time")
 sync_label = f" | 💾 GitHub 동기화 완료: {last_sync}" if last_sync else ""
-st.caption(f"⚡ 네이버 금융 연동 완료{sync_label}")
+st.caption(f"⚡ 퀀트 멀티 팩터(가치 30% + 수급 35% + 모멘텀 35%) 스코어링 엔진 가동{sync_label}")
 
-# 체크박스 기반 통합 데이터 에디터
+# 통합 데이터 테이블
 edited_df = st.data_editor(
     display_df,
     key="stock_editor",
@@ -320,17 +385,17 @@ edited_df = st.data_editor(
         "종목명": st.column_config.TextColumn(disabled=True),
         "코드": st.column_config.TextColumn(disabled=True),
         "현재가": st.column_config.NumberColumn(format="%d 원", disabled=True),
+        "실적진단": st.column_config.TextColumn("실적/가치 진단", disabled=True),
         "수급(5일)": st.column_config.TextColumn(disabled=True),
-        "실적전망": st.column_config.TextColumn(disabled=True),
         "20일이격": st.column_config.TextColumn(disabled=True),
         "RSI": st.column_config.NumberColumn(disabled=True),
-        "추천": st.column_config.TextColumn(disabled=True),
+        "종합의견": st.column_config.TextColumn("퀀트 종합 의견", disabled=True),
     },
     use_container_width=True,
     hide_index=True
 )
 
-# 선택 종목 삭제 버튼
+# 종목 삭제 버튼
 selected_rows = edited_df[edited_df["선택"] == True]
 col_del_btn, _ = st.columns([2, 5])
 with col_del_btn:
