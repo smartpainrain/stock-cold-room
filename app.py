@@ -11,21 +11,22 @@ import os
 DATA_FILE = "portfolio.json"
 
 # -------------------------------------------------------------
-# GitHub API 연동 핵심 함수
+# GitHub API 연동 함수 (실패 원인 화면 출력)
 # -------------------------------------------------------------
 def get_github_config():
     try:
-        token = st.secrets["GITHUB_TOKEN"]
-        repo = st.secrets["GITHUB_REPO"]
-        return token.strip(), repo.strip()
+        token = st.secrets["GITHUB_TOKEN"].strip()
+        repo = st.secrets["GITHUB_REPO"].strip()
+        return token, repo
     except Exception:
         return None, None
 
 def load_portfolio():
     token, repo = get_github_config()
     
+    # 1. GitHub API 원격 로드 (타임스탬프 파라미터로 캐시 원천 차단)
     if token and repo:
-        url = f"https://api.github.com/repos/{repo}/contents/{DATA_FILE}"
+        url = f"https://api.github.com/repos/{repo}/contents/{DATA_FILE}?ref=main&t={datetime.datetime.now().timestamp()}"
         headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json"
@@ -38,11 +39,12 @@ def load_portfolio():
                 parsed_json = json.loads(decoded_content)
                 if parsed_json:
                     return pd.DataFrame(parsed_json)
-            elif res.status_code != 404:
-                st.warning(f"GitHub 로드 실패 (상태코드: {res.status_code}): {res.text}")
+            else:
+                st.error(f"🚨 GitHub 파일 불러오기 실패 (HTTP {res.status_code}): {res.text}")
         except Exception as e:
-            st.error(f"GitHub 통신 오류: {e}")
+            st.error(f"🚨 GitHub API 연결 실패: {e}")
 
+    # 2. 로컬 파일 확인
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -52,18 +54,15 @@ def load_portfolio():
         except Exception:
             pass
 
-    default_df = pd.DataFrame([
-        {"종목명": "삼성전자", "코드": "005930", "매수가": 72000},
-        {"종목명": "SK하이닉스", "코드": "000660", "매수가": 165000},
-        {"종목명": "한화에어로스페이스", "코드": "012450", "매수가": 310000},
-    ])
-    save_to_github(default_df)
-    return default_df
+    # 3. GitHub 연결 실패 시 빈 데이터프레임 반환 (기본값으로 되살아나는 현상 원천 차단)
+    st.warning("⚠️ GitHub에 저장된 종목 데이터를 가져오지 못했습니다. Secrets 설정과 portfolio.json 파일을 확인하세요.")
+    return pd.DataFrame(columns=["종목명", "코드", "매수가"])
 
 def save_to_github(df):
     data_dict = df.to_dict(orient="records")
     json_content = json.dumps(data_dict, ensure_ascii=False, indent=2)
     
+    # 로컬 파일 즉시 백업
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             f.write(json_content)
@@ -72,7 +71,7 @@ def save_to_github(df):
 
     token, repo = get_github_config()
     if not token or not repo:
-        st.error("🚨 Streamlit Secrets에 GITHUB_TOKEN 또는 GITHUB_REPO가 설정되지 않았습니다.")
+        st.error("🚨 Streamlit Secrets에 GITHUB_TOKEN 또는 GITHUB_REPO가 설정되어 있지 않습니다.")
         return False
 
     url = f"https://api.github.com/repos/{repo}/contents/{DATA_FILE}"
@@ -82,7 +81,8 @@ def save_to_github(df):
     }
 
     try:
-        res = requests.get(url, headers=headers, timeout=5)
+        # 최신 SHA 조회
+        res = requests.get(f"{url}?ref=main&t={datetime.datetime.now().timestamp()}", headers=headers, timeout=5)
         sha = res.json().get("sha") if res.status_code == 200 else None
 
         encoded_content = base64.b64encode(json_content.encode("utf-8")).decode("utf-8")
@@ -99,10 +99,10 @@ def save_to_github(df):
             st.toast("✅ GitHub 동기화 성공!", icon="💾")
             return True
         else:
-            st.error(f"🚨 GitHub 동기화 실패 (코드: {put_res.status_code}): {put_res.json().get('message')}")
+            st.error(f"🚨 GitHub 저장 실패 (HTTP {put_res.status_code}): {put_res.json().get('message')}")
             return False
     except Exception as e:
-        st.error(f"GitHub 저장 요청 중 에러 발생: {e}")
+        st.error(f"🚨 GitHub 저장 요청 에러: {e}")
         return False
 
 # -------------------------------------------------------------
@@ -148,7 +148,7 @@ with col_h2:
 st.divider()
 
 # -------------------------------------------------------------
-# 2. 종목 자동 검색 및 보조 함수
+# 2. 종목 자동 매칭 로직
 # -------------------------------------------------------------
 TICKER_DICT = {
     "삼성전자": "005930",
@@ -170,17 +170,11 @@ TICKER_DICT = {
 
 def resolve_code(name_or_code: str) -> str:
     cleaned = name_or_code.strip().lower().replace(" ", "")
-    
-    # 1. 6자리 숫자 입력 시 바로 승인
     if len(cleaned) == 6 and cleaned.isdigit():
         return cleaned
-        
-    # 2. 사전 등록 종목 매칭
     for k, v in TICKER_DICT.items():
         if k.lower().replace(" ", "") == cleaned:
             return v
-            
-    # 3. 네이버 금융 자동 검색 (미등록 종목 자동 매칭)
     try:
         search_url = f"https://ac.finance.naver.com/ac?q={requests.utils.quote(name_or_code.strip())}&target=stock"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -193,7 +187,6 @@ def resolve_code(name_or_code: str) -> str:
                 return code_cand
     except Exception:
         pass
-
     return ""
 
 @st.cache_data(ttl=15)
