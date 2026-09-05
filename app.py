@@ -115,24 +115,26 @@ def save_to_github(df):
     return False
 
 # -------------------------------------------------------------
-# 2. 강력한 종목 검색 엔진 (에러 100% 원천 차단)
+# 2. 종목 검색 엔진 (종목명과 코드 쌍으로 완벽 반환)
 # -------------------------------------------------------------
 TICKER_DICT = {
-    "삼성전자": "005930", "sk하이닉스": "000660", "한화에어로스페이스": "012450", 
+    "삼성전자": "005930", "SK하이닉스": "000660", "한화에어로스페이스": "012450", 
     "삼양식품": "003230", "현대차": "005380", "네이버": "035420", 
-    "sk이노베이션": "096770", "한미반도체": "042700"
+    "SK이노베이션": "096770", "한미반도체": "042700", "삼성전기": "009150",
+    "카카오": "035720"
 }
 
-def resolve_code(name_or_code):
+def resolve_code_and_name(name_or_code):
+    """입력값으로부터 정확한 (종목명, 6자리 종목코드) 튜플을 반환합니다."""
     cleaned = str(name_or_code).strip()
-    if len(cleaned) == 6 and cleaned.isdigit(): return cleaned
-    
-    # 1. 자체 사전 매칭
     cleaned_lower = cleaned.lower().replace(" ", "")
+    
+    # 1. 내부 사전 매칭 (이름 또는 코드로 검색)
     for k, v in TICKER_DICT.items():
-        if k.lower().replace(" ", "") == cleaned_lower: return v
-        
-    # 2. 네이버 모바일 통합 검색 API (가장 강력함, '삼성전기' 등 완벽 대응)
+        if k.lower().replace(" ", "") == cleaned_lower or v == cleaned:
+            return k, v
+            
+    # 2. 네이버 모바일 통합 검색 API (가장 정확한 공식 이름과 코드 매핑)
     try:
         m_url = f"https://m.stock.naver.com/api/json/search/searchListJson.nhn?keyword={requests.utils.quote(cleaned)}"
         m_res = http_session.get(m_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3).json()
@@ -140,24 +142,26 @@ def resolve_code(name_or_code):
         if items:
             for item in items:
                 code = str(item.get("itemcode", "")).strip()
+                name = str(item.get("name", "")).strip()
                 if len(code) == 6 and code.isdigit():
-                    return code
+                    return name, code
     except: pass
     
-    # 3. 네이버 자동완성 API (최후의 보루)
+    # 3. 네이버 자동완성 API (백업)
     try:
         ac_url = f"https://ac.finance.naver.com/ac?q={requests.utils.quote(cleaned)}&target=stock"
         ac_res = http_session.get(ac_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3).json()
         items = ac_res.get("items", [[]])[0]
         if items:
             for row in items:
-                for field in row:
-                    val = str(field).strip()
-                    if len(val) == 6 and val.isdigit():
-                        return val
+                if len(row) > 1:
+                    name = str(row[0]).strip()
+                    code = str(row[1]).strip()
+                    if len(code) == 6 and code.isdigit():
+                        return name, code
     except: pass
     
-    return ""
+    return None, None
 
 def safe_parse_price(val):
     if not val: return 0
@@ -165,7 +169,7 @@ def safe_parse_price(val):
     return int(s) if s else 0
 
 # -------------------------------------------------------------
-# 3. 퀀트 분석 엔진 (NXT / 시간외 융단폭격 스캔)
+# 3. 퀀트 분석 엔진
 # -------------------------------------------------------------
 def fetch_full_stock_analysis(code: str):
     default_res = {
@@ -178,8 +182,6 @@ def fetch_full_stock_analysis(code: str):
     cur_p = 0
     reg_p = 0
     after_p = 0
-    
-    # API 응답을 저장해둘 컨테이너
     api_data = {}
     
     # 1. 가격 데이터 추출 (API 및 HTML 스크래핑 전면 결합)
@@ -204,18 +206,15 @@ def fetch_full_stock_analysis(code: str):
             reg_match = re.search(r'<p class="no_today">\s*<em.*?<span class="blind">([\d,]+)</span>', main_res, re.DOTALL)
             if reg_match: reg_p = safe_parse_price(reg_match.group(1))
             
-        # HTML 내 시간외/NXT 텍스트가 명시적으로 존재하는지 정규식 스캔
         nxt_matches = re.findall(r'(?:NXT|시간외단일가|시간외)[^>]*>.*?([\d]{2,3}(?:,[\d]{3})*)', main_res, re.DOTALL | re.IGNORECASE)
         for m in nxt_matches:
             val = safe_parse_price(m)
-            # 거래량 등 엉뚱한 수치를 걸러내기 위해 정규장 종가 대비 ±30% 이내의 값만 유효하게 인정
             if val > 0 and reg_p * 0.7 <= val <= reg_p * 1.3:
                 after_p = val
                 break
     except: 
         main_res = ""
 
-    # API JSON 내부를 완전히 헤집어서 NXT/시간외 가격 융단폭격 탐색
     if after_p == 0:
         found_after = []
         def _walk_find_price(d):
@@ -232,12 +231,9 @@ def fetch_full_stock_analysis(code: str):
         _walk_find_price(api_data)
         valid_after = [p for p in found_after if reg_p * 0.7 <= p <= reg_p * 1.3]
         if valid_after:
-            after_p = max(valid_after) # 가장 높은/최신 값 적용
+            after_p = max(valid_after)
 
-    # 최종 현재가 반영 (NXT/시간외 단일가가 존재하면 정규장 종가 무시)
     cur_p = after_p if after_p > 0 else reg_p
-    
-    # 콤마(,) 포맷팅 적용
     default_res["현재가"] = f"{cur_p:,}" if cur_p > 0 else "0"
 
     # 2. 밸류에이션 팩터
@@ -321,7 +317,6 @@ def fetch_full_stock_analysis(code: str):
             closes = [float(x.split('|')[4]) for x in items]
             df_c = pd.Series(closes)
             
-            # 기술적 지표 베이스 가격은 차트상 가장 최신의 종가를 사용
             base_p = cur_p if cur_p > 0 else int(df_c.iloc[-1])
             
             ma20 = df_c.rolling(20).mean().iloc[-1]
@@ -424,9 +419,10 @@ with st.form("add_stock_form", clear_on_submit=True):
 
 if submitted:
     if input_name.strip():
-        code = resolve_code(input_name.strip())
-        if code:
-            new_stock = pd.DataFrame([{"종목명": input_name.strip(), "코드": code}])
+        # 여기서 반환받은 공식 이름과 코드를 모두 변수로 받습니다.
+        resolved_name, resolved_code = resolve_code_and_name(input_name.strip())
+        if resolved_code and resolved_name:
+            new_stock = pd.DataFrame([{"종목명": resolved_name, "코드": resolved_code}])
             st.session_state.stock_df = pd.concat([st.session_state.stock_df, new_stock], ignore_index=True)
             save_to_github(st.session_state.stock_df)
             st.rerun()
