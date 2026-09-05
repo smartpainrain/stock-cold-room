@@ -36,7 +36,7 @@ def get_github_config():
 def load_portfolio():
     token, repo = get_github_config()
     
-    # 1. GitHub API 원격 로드 (타임스탬프 파라미터로 캐시 원천 차단)
+    # 1. GitHub API 원격 로드 (타임스탬프 파라미터로 캐시 차단)
     if token and repo:
         url = f"https://api.github.com/repos/{repo}/contents/{DATA_FILE}?ref=main&t={datetime.datetime.now().timestamp()}"
         headers = {
@@ -66,7 +66,7 @@ def load_portfolio():
         except Exception:
             pass
 
-    # 3. GitHub 연결 실패 시 빈 데이터프레임 반환 (기존 하드코딩 종목 부활 방지)
+    # 3. GitHub 연결 실패 시 빈 데이터프레임 반환
     st.warning("⚠️ GitHub에 저장된 종목 데이터를 가져오지 못했습니다. Secrets 설정과 portfolio.json을 확인하세요.")
     return pd.DataFrame(columns=["종목명", "코드", "매수가"])
 
@@ -108,7 +108,9 @@ def save_to_github(df):
 
         put_res = requests.put(url, headers=headers, json=payload, timeout=5)
         if put_res.status_code in [200, 201]:
-            st.toast("✅ GitHub 동기화 성공!", icon="💾")
+            # 토스트 대신 세션 상태에 마지막 동기화 시각 기록
+            sync_time = datetime.datetime.now(ZoneInfo("Asia/Seoul")).strftime("%H:%M:%S")
+            st.session_state["last_sync_time"] = sync_time
             return True
         else:
             st.error(f"🚨 GitHub 저장 실패 (HTTP {put_res.status_code}): {put_res.json().get('message')}")
@@ -160,7 +162,7 @@ with col_h2:
 st.divider()
 
 # -------------------------------------------------------------
-# 2. 종목 자동 매칭 로직 (사전 + 네이버 금융 자동 검색)
+# 2. 종목 자동 매칭 로직
 # -------------------------------------------------------------
 TICKER_DICT = {
     "삼성전자": "005930",
@@ -300,7 +302,7 @@ with st.form("add_stock_form", clear_on_submit=True):
             st.rerun()
 
 # -------------------------------------------------------------
-# 5. 데이터 에디터 (매수가 수정 감지 및 즉시 동기화)
+# 5. 데이터 에디터 (매수가 수정 감지 및 조용한 동기화)
 # -------------------------------------------------------------
 if "stock_editor" in st.session_state and "edited_rows" in st.session_state["stock_editor"]:
     edited_rows = st.session_state["stock_editor"]["edited_rows"]
@@ -338,7 +340,10 @@ for idx, row in st.session_state.stock_df.iterrows():
 
 display_df = pd.DataFrame(display_rows)
 
-st.caption("⚡ 네이버페이 증권 실시간 체결가 기준으로 자동 갱신됩니다. 수정 사항은 GitHub 원격 저장소에 즉시 동기화됩니다.")
+# 동기화 시각 하단 캡션 안내
+last_sync = st.session_state.get("last_sync_time")
+sync_label = f" | 💾 GitHub 동기화 완료: {last_sync}" if last_sync else ""
+st.caption(f"⚡ 네이버페이 증권 실시간 체결가 기준으로 자동 갱신됩니다.{sync_label}")
 
 st.data_editor(
     display_df,
