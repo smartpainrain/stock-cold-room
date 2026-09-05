@@ -365,7 +365,7 @@ if submitted:
             st.error("등록 실패. 올바른 종목명이나 6자리 코드를 입력하세요.")
 
 # -------------------------------------------------------------
-# 데이터 에디터 테이블 영역 (현재가 컬럼명 변경 완료)
+# 데이터 에디터 테이블 영역 (현재가 수정 영구 저장 보장)
 # -------------------------------------------------------------
 display_rows = []
 codes = st.session_state.stock_df['코드'].tolist()
@@ -395,7 +395,7 @@ if codes:
         })
 
 display_df = pd.DataFrame(display_rows)
-st.caption("⚡ [안내] '현재가' 칸에 원하는 가격을 입력하고 엔터를 치면 콤마가 찍히며 즉시 반영 및 브리핑에 적용됩니다.")
+st.caption("⚡ [안내] '현재가' 칸에 원하는 가격을 입력하고 엔터를 치면 즉시 저장되며 브리핑에 반영됩니다.")
 
 column_config = {
     "종목명": st.column_config.TextColumn(disabled=True),
@@ -414,6 +414,7 @@ column_config["선택"] = st.column_config.CheckboxColumn("삭제", disabled=not
 
 edited_df = st.data_editor(display_df, key="stock_editor", column_config=column_config, use_container_width=True, hide_index=True)
 
+# 변경 감지 및 영구 저장 로직
 if not edited_df.equals(display_df):
     for idx, row in edited_df.iterrows():
         target_code = row["코드"]
