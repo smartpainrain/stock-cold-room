@@ -10,63 +10,51 @@ import os
 
 DATA_FILE = "portfolio.json"
 
-# GitHub API를 통한 영구 저장 함수
-def save_to_github(df):
-    data_dict = df.to_dict(orient="records")
-    json_content = json.dumps(data_dict, ensure_ascii=False, indent=2)
-    
+# -------------------------------------------------------------
+# GitHub API 연동 핵심 함수 (에러 투명성 확보)
+# -------------------------------------------------------------
+def get_github_config():
     try:
         token = st.secrets["GITHUB_TOKEN"]
         repo = st.secrets["GITHUB_REPO"]
-    except Exception:
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            f.write(json_content)
-        return
+        return token.strip(), repo.strip()
+    except Exception as e:
+        return None, None
 
-    url = f"https://api.github.com/repos/{repo}/contents/{DATA_FILE}"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json"
-    }
-    
-    res = requests.get(url, headers=headers)
-    sha = res.json().get("sha") if res.status_code == 200 else None
-    
-    encoded_content = base64.b64encode(json_content.encode("utf-8")).decode("utf-8")
-    
-    payload = {
-        "message": f"Update portfolio via Streamlit [skip ci]",
-        "content": encoded_content,
-        "branch": "main"
-    }
-    if sha:
-        payload["sha"] = sha
-        
-    requests.put(url, headers=headers, json=payload)
-
-# 영구 저장소 로드 함수
 def load_portfolio():
-    try:
-        token = st.secrets["GITHUB_TOKEN"]
-        repo = st.secrets["GITHUB_REPO"]
+    token, repo = get_github_config()
+    
+    # 1. GitHub 원격 로드 우선 시도
+    if token and repo:
         url = f"https://api.github.com/repos/{repo}/contents/{DATA_FILE}"
-        headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
-        res = requests.get(url, headers=headers)
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json"
+        }
+        res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
-            file_data = res.json()
-            decoded_content = base64.b64decode(file_data["content"]).decode("utf-8")
-            return pd.DataFrame(json.loads(decoded_content))
-    except Exception:
-        pass
+            try:
+                file_data = res.json()
+                decoded_content = base64.b64decode(file_data["content"]).decode("utf-8")
+                parsed_json = json.loads(decoded_content)
+                if parsed_json:
+                    return pd.DataFrame(parsed_json)
+            except Exception as e:
+                st.error(f"GitHub 파일 디코딩 오류: {e}")
+        elif res.status_code != 404:
+            st.warning(f"GitHub 로드 실패 (상태코드: {res.status_code}): {res.text}")
 
+    # 2. 로컬 파일 확인 (Streamlit 인스턴스 임시 보관)
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                return pd.DataFrame(data)
+                if data:
+                    return pd.DataFrame(data)
         except Exception:
             pass
 
+    # 3. 최초 기본값 (GitHub에도 파일이 없을 때만 생성)
     default_df = pd.DataFrame([
         {"종목명": "삼성전자", "코드": "005930", "매수가": 72000},
         {"종목명": "SK하이닉스", "코드": "000660", "매수가": 165000},
@@ -75,7 +63,53 @@ def load_portfolio():
     save_to_github(default_df)
     return default_df
 
-# 1. 상단 타이틀 및 KST 실시간 시각
+def save_to_github(df):
+    data_dict = df.to_dict(orient="records")
+    json_content = json.dumps(data_dict, ensure_ascii=False, indent=2)
+    
+    # 로컬 백업 기록
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            f.write(json_content)
+    except Exception:
+        pass
+
+    token, repo = get_github_config()
+    if not token or not repo:
+        st.error("🚨 Streamlit Secrets에 GITHUB_TOKEN 또는 GITHUB_REPO가 설정되지 않았습니다.")
+        return False
+
+    url = f"https://api.github.com/repos/{repo}/contents/{DATA_FILE}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json"
+    }
+
+    # 기존 파일 SHA 조회
+    res = requests.get(url, headers=headers, timeout=5)
+    sha = res.json().get("sha") if res.status_code == 200 else None
+
+    # Base64 인코딩 후 푸시
+    encoded_content = base64.b64encode(json_content.encode("utf-8")).decode("utf-8")
+    payload = {
+        "message": f"Update portfolio: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "content": encoded_content,
+        "branch": "main"
+    }
+    if sha:
+        payload["sha"] = sha
+
+    put_res = requests.put(url, headers=headers, json=payload, timeout=5)
+    if put_res.status_code in [200, 201]:
+        st.toast("✅ GitHub 동기화 성공!", icon="💾")
+        return True
+    else:
+        st.error(f"🚨 GitHub 동기화 실패 (코드: {put_res.status_code}): {put_res.json().get('message')}")
+        return False
+
+# -------------------------------------------------------------
+# 1. 상단 타이틀 및 실시간 KOSPI
+# -------------------------------------------------------------
 st.markdown("### stock-cold-room", unsafe_allow_html=True)
 
 @st.cache_data(ttl=15)
@@ -115,7 +149,9 @@ with col_h2:
 
 st.divider()
 
-# 종목명/코드 매핑 사전 (sk이노베이션 추가 완료)
+# -------------------------------------------------------------
+# 2. 종목 매핑 사전 및 보조 함수
+# -------------------------------------------------------------
 TICKER_DICT = {
     "삼성전자": "005930",
     "sk하이닉스": "000660",
@@ -140,7 +176,6 @@ def resolve_code(name_or_code: str) -> str:
             return v
     if len(cleaned) == 6 and cleaned.isdigit():
         return cleaned
-    # 사전에 없고 6자리 숫자가 아닐 경우 빈 문자열을 반환하여 이름이 코드로 들어가는 것을 방지
     return ""
 
 @st.cache_data(ttl=15)
@@ -206,19 +241,19 @@ def analyze_technical_signals(code: str, cur_price: int):
         elif current_rsi <= 38:
             rec = "🟢 매수"
 
-        return {
-            "RSI": round(current_rsi, 1),
-            "20일이격": round(disp20, 1),
-            "추천": rec
-        }
+        return {"RSI": round(current_rsi, 1), "20일이격": round(disp20, 1), "추천": rec}
     except Exception:
         return default_res
 
-# 2. GitHub 기반 포트폴리오 로드
+# -------------------------------------------------------------
+# 3. 포트폴리오 세션 초기화
+# -------------------------------------------------------------
 if 'stock_df' not in st.session_state:
     st.session_state.stock_df = load_portfolio()
 
-# 3. 신규 종목 등록 폼
+# -------------------------------------------------------------
+# 4. 신규 종목 추가
+# -------------------------------------------------------------
 st.markdown("#### 🎯 종목 모니터링 (네이버 실시간 시세 연동)")
 
 with st.form("add_stock_form", clear_on_submit=True):
@@ -234,18 +269,16 @@ with st.form("add_stock_form", clear_on_submit=True):
     if submitted and input_name.strip():
         code = resolve_code(input_name)
         if not code:
-            st.error("등록되지 않은 종목명이거나 올바른 6자리 종목코드가 아닙니다. (TICKER_DICT에 추가 필요)")
+            st.error("올바른 6자리 종목코드를 입력하거나 TICKER_DICT에 등록된 종목명을 입력하세요.")
         else:
-            new_row = pd.DataFrame([{
-                "종목명": input_name.strip(),
-                "코드": code,
-                "매수가": int(input_buy)
-            }])
+            new_row = pd.DataFrame([{"종목명": input_name.strip(), "코드": code, "매수가": int(input_buy)}])
             st.session_state.stock_df = pd.concat([st.session_state.stock_df, new_row], ignore_index=True)
             save_to_github(st.session_state.stock_df)
             st.rerun()
 
-# 4. 데이터 에디터 매수가 변경사항 선반영 및 GitHub 자동 커밋
+# -------------------------------------------------------------
+# 5. 데이터 에디터 (매수가 수정 감지 및 즉시 커밋)
+# -------------------------------------------------------------
 if "stock_editor" in st.session_state and "edited_rows" in st.session_state["stock_editor"]:
     edited_rows = st.session_state["stock_editor"]["edited_rows"]
     modified = False
@@ -256,7 +289,6 @@ if "stock_editor" in st.session_state and "edited_rows" in st.session_state["sto
     if modified:
         save_to_github(st.session_state.stock_df)
 
-# 5. 실시간 가격 및 기술적 지표 계산
 display_rows = []
 for idx, row in st.session_state.stock_df.iterrows():
     code = str(row['코드'])
@@ -266,12 +298,7 @@ for idx, row in st.session_state.stock_df.iterrows():
     
     if buy_p > 0 and cur_p > 0:
         ret_rate = ((cur_p - buy_p) / buy_p) * 100
-        if ret_rate > 0:
-            ret_display = f"🔺 +{ret_rate:.2f}%"
-        elif ret_rate < 0:
-            ret_display = f"🔻 {ret_rate:.2f}%"
-        else:
-            ret_display = "0.00%"
+        ret_display = f"🔺 +{ret_rate:.2f}%" if ret_rate > 0 else (f"🔻 {ret_rate:.2f}%" if ret_rate < 0 else "0.00%")
     else:
         ret_display = "-"
 
@@ -288,7 +315,7 @@ for idx, row in st.session_state.stock_df.iterrows():
 
 display_df = pd.DataFrame(display_rows)
 
-st.caption("⚡ 네이버페이 증권 실시간 체결가 기준으로 자동 갱신됩니다. 매수가 수정/삭제 내역은 GitHub에 자동 커밋되어 영구 보존됩니다.")
+st.caption("⚡ 네이버페이 증권 실시간 체결가 기준으로 자동 갱신됩니다. 수정 사항은 GitHub 원격 저장소에 즉시 동기화됩니다.")
 
 st.data_editor(
     display_df,
@@ -307,7 +334,9 @@ st.data_editor(
     hide_index=True
 )
 
+# -------------------------------------------------------------
 # 6. 종목 삭제 관리
+# -------------------------------------------------------------
 st.markdown("<br>", unsafe_allow_html=True)
 st.markdown("#### 🗑️ 종목 삭제")
 if not st.session_state.stock_df.empty:
@@ -325,7 +354,9 @@ if not st.session_state.stock_df.empty:
                     del st.session_state["stock_editor"]
                 st.rerun()
 
-# 7. 개별 종목 3개월 시계열 차트
+# -------------------------------------------------------------
+# 7. 개별 종목 3개월 차트
+# -------------------------------------------------------------
 st.markdown("<br>", unsafe_allow_html=True)
 st.markdown("#### 📈 종목별 3개월 종가 추이")
 current_stocks = st.session_state.stock_df["종목명"].dropna().tolist()
