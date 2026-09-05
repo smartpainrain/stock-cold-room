@@ -179,7 +179,7 @@ def parse_price_to_int(val):
     return int(s) if s else 0
 
 # -------------------------------------------------------------
-# 3. 퀀트 분석 엔진 (가격 변동에 따른 퀀트 점수 실시간 연동)
+# 3. 퀀트 분석 엔진
 # -------------------------------------------------------------
 def fetch_full_stock_analysis(code_or_name, manual_price):
     default_res = {
@@ -219,7 +219,6 @@ def fetch_full_stock_analysis(code_or_name, manual_price):
     eval_p = m_p if m_p > 0 else reg_p
     default_res["eval_price"] = eval_p
 
-    # 밸류에이션 점수
     val_score = 15
     val_label = "지표 산출불가"
     if per_val is not None:
@@ -230,7 +229,6 @@ def fetch_full_stock_analysis(code_or_name, manual_price):
         else: val_score, val_label = 5, f"🔴 고평가 (PER {per_val:.1f})"
     default_res["실적진단"] = val_label
 
-    # 수급 점수
     flow_score = 10
     flow_fetched = False
     frgn_sum, orgn_sum = 0, 0
@@ -252,7 +250,6 @@ def fetch_full_stock_analysis(code_or_name, manual_price):
         elif orgn_sum > 0: flow_score, default_res["수급"] = 20, "🏢 기관 순매수"
         else: flow_score, default_res["수급"] = 15, "⚖️ 수급 균형(중립)"
 
-    # 기술적 모멘텀 (사용자가 입력한 eval_p 변동에 즉각 반응하여 점수 산출)
     tech_score = 15
     try:
         fchart_url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count=60&requestType=0"
@@ -267,14 +264,12 @@ def fetch_full_stock_analysis(code_or_name, manual_price):
             disp20 = (base_p / ma20) * 100
             default_res["20일이격"] = f"{disp20:.1f}%"
 
-            # 가상 RSI 및 변동성 모의 연동 (가격이 정규장 대비 급등/급락하면 기술적 점수 즉시 반영)
             delta = df_c.diff()
             gain = delta.clip(lower=0).rolling(14).mean()
             loss = (-delta.clip(upper=0)).rolling(14).mean().replace(0, 0.0001)
             rs = gain / loss
             base_rsi = float((100 - (100 / (1 + rs))).iloc[-1])
             
-            # 수동 입력 가격이 정규장보다 높으면 RSI를 인위적으로 높여 과열 감지, 낮으면 낮춤
             if reg_p > 0 and eval_p > 0:
                 price_ratio = eval_p / reg_p
                 adjusted_rsi = min(max(base_rsi * price_ratio, 5.0), 98.0)
@@ -423,11 +418,11 @@ column_config = {
     "eval_price": None 
 }
 
-column_config["선택"] = st.column_config.CheckboxColumn("삭제", disabled=not st.session_state.is_admin, default=False)
+column_config["선택"] = st.column_config.CheckboxColumn("삭제", disabled=False, default=False)
 
 edited_df = st.data_editor(display_df, key="stock_editor", column_config=column_config, use_container_width=True, hide_index=True)
 
-# 즉각적인 콤마 포맷팅 및 저장 연동
+# 현재가 수정 즉시 저장
 if not edited_df.equals(display_df):
     for idx, row in edited_df.iterrows():
         target_code = row["코드"]
@@ -436,14 +431,21 @@ if not edited_df.equals(display_df):
     save_to_github(st.session_state.stock_df)
     st.rerun()
 
+# -------------------------------------------------------------
+# 삭제 버튼 즉시 노출 로직 (관리자 로그인 시 체크박스 선택 즉시 생성)
+# -------------------------------------------------------------
 selected_rows = edited_df[edited_df["선택"] == True]
+
 if st.session_state.is_admin and len(selected_rows) > 0:
-    if st.button(f"🗑️ 선택 삭제 ({len(selected_rows)})"):
-        codes_to_remove = selected_rows["코드"].tolist()
-        st.session_state.stock_df = st.session_state.stock_df[~st.session_state.stock_df["코드"].isin(codes_to_remove)].reset_index(drop=True)
-        save_to_github(st.session_state.stock_df)
-        if "stock_editor" in st.session_state: del st.session_state["stock_editor"]
-        st.rerun()
+    st.markdown("<br>", unsafe_allow_html=True)
+    col_del_btn, _ = st.columns([2, 5])
+    with col_del_btn:
+        if st.button(f"🗑️ 선택한 종목 삭제 ({len(selected_rows)}개)", use_container_width=True, type="primary"):
+            codes_to_remove = selected_rows["코드"].tolist()
+            st.session_state.stock_df = st.session_state.stock_df[~st.session_state.stock_df["코드"].isin(codes_to_remove)].reset_index(drop=True)
+            save_to_github(st.session_state.stock_df)
+            if "stock_editor" in st.session_state: del st.session_state["stock_editor"]
+            st.rerun()
 
 # -------------------------------------------------------------
 # 5. 차트 터미널 및 연동형 AI 브리핑
