@@ -151,15 +151,29 @@ def fetch_full_stock_analysis(code: str, buy_price: int):
     except Exception:
         pass
 
-    # 2. 네이버 기본적 지표 (PER / EPS)
+    # 2. 네이버 기본적 지표 (PER / EPS 다중 탐색 보완)
     try:
-        url_basic = f"https://m.stock.naver.com/api/stock/{code}/basic"
-        b_json = requests.get(url_basic, headers=headers, timeout=3).json()
-        stock_info = b_json.get("stockItemTotalInfos", [{}])[0]
-        per = stock_info.get("per", "")
-        eps = stock_info.get("eps", "")
-        if per and eps:
-            default_res["실적"] = f"PER {per} / EPS {eps}"
+        url_intg = f"https://m.stock.naver.com/api/stock/{code}/integration"
+        intg_json = requests.get(url_intg, headers=headers, timeout=3).json()
+        
+        deal_info = intg_json.get("dealInfo", {})
+        consensus = intg_json.get("consensusInfo", {})
+        
+        per = consensus.get("per") or deal_info.get("per")
+        eps = consensus.get("eps") or deal_info.get("eps")
+        
+        if not per or not eps:
+            for item in intg_json.get("totalInfos", []):
+                k = item.get("key", "")
+                if "PER" in k:
+                    per = item.get("value")
+                elif "EPS" in k:
+                    eps = item.get("value")
+
+        if per or eps:
+            per_str = f"PER {per}" if per else ""
+            eps_str = f"EPS {eps}" if eps else ""
+            default_res["실적"] = " / ".join(filter(None, [per_str, eps_str]))
     except Exception:
         pass
 
