@@ -14,7 +14,7 @@ DATA_FILE = "portfolio.json"
 st.set_page_config(page_title="Stock Cold-Room", layout="wide", initial_sidebar_state="collapsed")
 
 # =====================================================================
-# [반응형 프리미엄 터미널 및 컬럼 정렬 완벽 고정 CSS]
+# [반응형 프리미엄 터미널 및 컬럼 정렬 커스텀 CSS]
 # =====================================================================
 st.markdown("""
 <style>
@@ -47,27 +47,17 @@ st.markdown("""
     }
 
     /* -------------------------------------------------------------
-       데이터 에디터 컬럼별 정렬 강제 적용 (중앙 및 우측)
+       데이터 에디터 컬럼별 정렬 강제 적용
        ------------------------------------------------------------- */
-    /* 1. 선택 (체크박스) */
     div[data-testid="stDataFrame"] th:nth-child(1), div[data-testid="stDataFrame"] td:nth-child(1) { text-align: center !important; }
-    /* 2. 종목명 (중앙) */
     div[data-testid="stDataFrame"] th:nth-child(2), div[data-testid="stDataFrame"] td:nth-child(2) { text-align: center !important; }
-    /* 3. 코드 (중앙) */
     div[data-testid="stDataFrame"] th:nth-child(3), div[data-testid="stDataFrame"] td:nth-child(3) { text-align: center !important; }
-    /* 4. 현재가(수동) (우측) */
     div[data-testid="stDataFrame"] th:nth-child(4), div[data-testid="stDataFrame"] td:nth-child(4) { text-align: right !important; }
-    /* 5. 현재가(정규장) (우측) */
     div[data-testid="stDataFrame"] th:nth-child(5), div[data-testid="stDataFrame"] td:nth-child(5) { text-align: right !important; }
-    /* 6. 실적 (중앙) */
     div[data-testid="stDataFrame"] th:nth-child(6), div[data-testid="stDataFrame"] td:nth-child(6) { text-align: center !important; }
-    /* 7. 수급(5D) (중앙) */
     div[data-testid="stDataFrame"] th:nth-child(7), div[data-testid="stDataFrame"] td:nth-child(7) { text-align: center !important; }
-    /* 8. 20일선 (우측) */
     div[data-testid="stDataFrame"] th:nth-child(8), div[data-testid="stDataFrame"] td:nth-child(8) { text-align: right !important; }
-    /* 9. RSI (우측) */
     div[data-testid="stDataFrame"] th:nth-child(9), div[data-testid="stDataFrame"] td:nth-child(9) { text-align: right !important; }
-    /* 10. 의견 (중앙) */
     div[data-testid="stDataFrame"] th:nth-child(10), div[data-testid="stDataFrame"] td:nth-child(10) { text-align: center !important; }
 </style>
 """, unsafe_allow_html=True)
@@ -189,19 +179,20 @@ def parse_price_to_int(val):
     return int(s) if s else 0
 
 # -------------------------------------------------------------
-# 3. 퀀트 분석 엔진
+# 3. 퀀트 분석 엔진 (정규장 가격과 수동 입력 가격 완벽 분리)
 # -------------------------------------------------------------
 def fetch_full_stock_analysis(code_or_name, manual_price):
     default_res = {
-        "현재가": "0", "수급": "⚠️ 데이터 집계불가", "실적진단": "지표 산출불가", 
-        "20일이격": "-", "RSI": 50.0, "종합의견": "🟡 관망 (50점)", "raw_cur_p": 0
+        "정규장현재가": "0", "수급": "⚠️ 데이터 집계불가", "실적진단": "지표 산출불가", 
+        "20일이격": "-", "RSI": 50.0, "종합의견": "🟡 관망 (50점)", "eval_price": 0
     }
     
     code = TICKER_DICT.get(code_or_name, code_or_name)
+    m_p = parse_price_to_int(manual_price)
+
     if not code or not str(code).isdigit() or len(str(code)) != 6:
-        p = parse_price_to_int(manual_price)
-        default_res["현재가"] = f"{p:,}" if p > 0 else "0"
-        default_res["raw_cur_p"] = p
+        default_res["정규장현재가"] = "0"
+        default_res["eval_price"] = m_p
         return default_res
 
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -224,11 +215,12 @@ def fetch_full_stock_analysis(code_or_name, manual_price):
             per_val = -1.0
     except: pass
 
-    m_p = parse_price_to_int(manual_price)
-    cur_p = m_p if m_p > 0 else reg_p
-    
-    default_res["현재가"] = f"{cur_p:,}" if cur_p > 0 else "0"
-    default_res["raw_cur_p"] = cur_p
+    # 정규장 가격은 순수 네이버 종가로 고정
+    default_res["정규장현재가"] = f"{reg_p:,}" if reg_p > 0 else "0"
+
+    # AI 평가 및 이격도 계산에 사용할 기준가 (수동가격이 있으면 수동가격, 없으면 정규장 종가)
+    eval_p = m_p if m_p > 0 else reg_p
+    default_res["eval_price"] = eval_p
 
     val_score, val_label = 15, "지표 산출불가"
     if per_val is not None:
@@ -267,7 +259,7 @@ def fetch_full_stock_analysis(code_or_name, manual_price):
         if len(items) >= 20:
             closes = [float(x.split('|')[4]) for x in items]
             df_c = pd.Series(closes)
-            base_p = cur_p if cur_p > 0 else int(df_c.iloc[-1])
+            base_p = eval_p if eval_p > 0 else int(df_c.iloc[-1])
             
             ma20 = df_c.rolling(20).mean().iloc[-1]
             disp20 = (base_p / ma20) * 100
@@ -375,7 +367,7 @@ if submitted:
             st.error("등록 실패. 올바른 종목명이나 6자리 코드를 입력하세요.")
 
 # -------------------------------------------------------------
-# 데이터 에디터 테이블 영역 (컬럼 정렬 완벽 고정)
+# 데이터 에디터 테이블 영역
 # -------------------------------------------------------------
 display_rows = []
 codes = st.session_state.stock_df['코드'].tolist()
@@ -395,13 +387,13 @@ if codes:
             "종목명": row["종목명"], 
             "코드": row["코드"],
             "현재가": formatted_m_p,  
-            "현재가(정규장)": ans["현재가"], 
+            "현재가(정규장)": ans["정규장현재가"], 
             "실적": ans["실적진단"], 
             "수급(5D)": ans["수급"],
             "20일선": ans["20일이격"], 
             "RSI": ans["RSI"], 
             "의견": ans["종합의견"],
-            "raw_price": ans["raw_cur_p"] 
+            "eval_price": ans["eval_price"] 
         })
 
 display_df = pd.DataFrame(display_rows)
@@ -417,7 +409,7 @@ column_config = {
     "20일선": st.column_config.TextColumn(disabled=True),
     "RSI": st.column_config.NumberColumn(disabled=True),
     "의견": st.column_config.TextColumn(disabled=True),
-    "raw_price": None 
+    "eval_price": None 
 }
 
 column_config["선택"] = st.column_config.CheckboxColumn("삭제", disabled=not st.session_state.is_admin, default=False)
@@ -442,7 +434,7 @@ if st.session_state.is_admin and len(selected_rows) > 0:
         st.rerun()
 
 # -------------------------------------------------------------
-# 5. 차트 터미널 및 수동현재가 연동형 AI 브리핑
+# 5. 차트 터미널 및 연동형 AI 브리핑
 # -------------------------------------------------------------
 def get_ai_analyst_opinion(df, code_name, quant_score, quant_status, current_price, ma20):
     if df.empty or len(df) < 60: return ""
@@ -493,7 +485,7 @@ if codes:
     if not display_df.empty:
         matched_row = display_df[display_df["종목명"] == sel_stock]
         if not matched_row.empty:
-            current_active_price = int(matched_row["raw_price"].values[0])
+            current_active_price = int(matched_row["eval_price"].values[0])
     
     q_score, q_stat = 50, "🟡 관망"
     if not display_df.empty:
