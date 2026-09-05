@@ -103,7 +103,7 @@ def save_to_github(df):
         return False
 
 # -------------------------------------------------------------
-# 2. 퀀트 멀티 팩터 분석 엔진
+# 2. 퀀트 멀티 팩터 분석 엔진 (NXT 시세 및 완벽 지표 파싱 탑재)
 # -------------------------------------------------------------
 TICKER_DICT = {
     "삼성전자": "005930", "sk하이닉스": "000660", "한화에어로스페이스": "012450", 
@@ -138,75 +138,98 @@ def fetch_full_stock_analysis(code: str):
     if not code:
         return default_res
 
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
 
-    # 1. 실시간 가격
+    # 1. NXT(넥스트레이드) / 시간외 / 정규장 가격 계층형 추적
     cur_p = 0
     try:
-        url_rt = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
-        rt_json = requests.get(url_rt, headers=headers, timeout=3).json()
-        if "datas" in rt_json and rt_json["datas"]:
-            cur_p = int(rt_json["datas"][0]["closePrice"].replace(",", ""))
-            default_res["현재가"] = cur_p
+        # 네이버 모바일 통합 데이터에서 실시간/시간외/NXT 체결 탐색
+        url_intg = f"https://m.stock.naver.com/api/stock/{code}/integration"
+        intg_res = requests.get(url_intg, headers=headers, timeout=3).json()
+        
+        # 1-1. NXT 또는 장외 체결가 우선 탐색
+        deal_info = intg_res.get("dealInfo", {})
+        nxt_p = deal_info.get("overMarketPrice") or deal_info.get("nxtPrice")
+        if nxt_p:
+            cur_p = int(str(nxt_p).replace(",", ""))
+        
+        # 1-2. 정규장 최근 체결가 대체
+        if cur_p == 0:
+            recent_p = intg_res.get("recentInfo", {}).get("closePrice") or deal_info.get("closePrice")
+            if recent_p:
+                cur_p = int(str(recent_p).replace(",", ""))
     except Exception:
         pass
 
-    # 2. 밸류에이션 팩터 (PER / EPS 정량 분석: 30점 만점)
-    val_score = 15  # 기본 점수
+    # 1-3. 보조: polling API 폴백
+    if cur_p == 0:
+        try:
+            url_rt = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
+            rt_json = requests.get(url_rt, headers=headers, timeout=3).json()
+            if "datas" in rt_json and rt_json["datas"]:
+                cur_p = int(rt_json["datas"][0]["closePrice"].replace(",", ""))
+        except Exception:
+            pass
+            
+    default_res["현재가"] = cur_p
+
+    # 2. 밸류에이션 팩터 (PER / EPS 다중 경로 정밀 파싱: 30점 만점)
+    val_score = 15
     val_label = "보통"
     per_val = None
     eps_val = None
-    try:
-        url_intg = f"https://m.stock.naver.com/api/stock/{code}/integration"
-        intg_json = requests.get(url_intg, headers=headers, timeout=3).json()
-        
-        deal_info = intg_json.get("dealInfo", {})
-        consensus = intg_json.get("consensusInfo", {})
-        
-        raw_per = consensus.get("per") or deal_info.get("per")
-        raw_eps = consensus.get("eps") or deal_info.get("eps")
-        
-        if not raw_per or not raw_eps:
-            for item in intg_json.get("totalInfos", []):
-                k = item.get("key", "")
-                if "PER" in k:
-                    raw_per = item.get("value")
-                elif "EPS" in k:
-                    raw_eps = item.get("value")
 
-        if raw_per:
-            try:
-                per_val = float(str(raw_per).replace(",", ""))
-            except Exception:
-                pass
-        if raw_eps:
-            try:
-                eps_val = float(str(raw_eps).replace(",", ""))
-            except Exception:
-                pass
+    try:
+        # 네이버 증권 데스크톱 기본정보 API (가장 안정적인 PER/EPS 제공)
+        url_basic = f"https://finance.naver.com/item/main.naver?code={code}"
+        basic_res = requests.get(url_basic, headers=headers, timeout=3).text
+        
+        # HTML 내 핵심 JSON/수치 정규 탐색
+        import re
+        per_match = re.search(r'id="_per">([0-9\.,]+)<', basic_res)
+        eps_match = re.search(r'id="_eps">([0-9\.,]+)<', basic_res)
+        
+        if per_match:
+            per_val = float(per_match.group(1).replace(",", ""))
+        if eps_match:
+            eps_val = float(eps_match.group(1).replace(",", ""))
+            
+        # 보조: integration API 내 consensus/totalInfos 재탐색
+        if per_val is None:
+            if 'intg_res' in locals():
+                consensus = intg_res.get("consensusInfo", {})
+                raw_per = consensus.get("per")
+                if raw_per:
+                    per_val = float(str(raw_per).replace(",", ""))
+                for item in intg_res.get("totalInfos", []):
+                    if "PER" in item.get("key", ""):
+                        per_val = float(str(item.get("value")).replace(",", ""))
+                        break
 
         if per_val is not None:
             if per_val <= 0:
                 val_score = 5
-                val_label = f"적자기업 (PER {per_val})"
+                val_label = f"적자기업 (PER {per_val:.1f})"
             elif per_val <= 10.0:
                 val_score = 30
-                val_label = f"🟢 초저평가 (PER {per_val})"
+                val_label = f"🟢 초저평가 (PER {per_val:.1f})"
             elif per_val <= 18.0:
                 val_score = 22
-                val_label = f"적정가치 (PER {per_val})"
+                val_label = f"적정가치 (PER {per_val:.1f})"
             elif per_val <= 30.0:
                 val_score = 12
-                val_label = f"성장프리미엄 (PER {per_val})"
+                val_label = f"성장프리미엄 (PER {per_val:.1f})"
             else:
                 val_score = 5
-                val_label = f"🔴 고평가부담 (PER {per_val})"
+                val_label = f"🔴 고평가부담 (PER {per_val:.1f})"
         else:
-            val_label = "지표 집계중"
+            val_label = "PER 산출불가"
             
         default_res["실적진단"] = val_label
     except Exception:
-        default_res["실적진단"] = "지표 집계중"
+        default_res["실적진단"] = "지표 산출불가"
 
     # 3. 수급 팩터 (최근 5일 외인/기관: 35점 만점)
     flow_score = 10
@@ -260,19 +283,19 @@ def fetch_full_stock_analysis(code: str):
             default_res["RSI"] = round(rsi, 1)
 
             if rsi <= 30:
-                tech_score = 35  # 극단적 과매도 기회
+                tech_score = 35
             elif current_p >= ma20 and 38.0 <= rsi <= 55.0:
-                tech_score = 30  # 추세 지지 눌림목
+                tech_score = 30
             elif 55.0 < rsi < 70.0:
-                tech_score = 18  # 통상 상승 흐름
+                tech_score = 18
             elif rsi >= 75:
-                tech_score = 0   # 단기 과열 경계
+                tech_score = 0
             else:
                 tech_score = 15
     except Exception:
         pass
 
-    # 5. 복합 점수 산출 및 최종 투자 의견 매핑
+    # 5. 복합 점수 산출 및 종합 의견 결정
     total_score = val_score + flow_score + tech_score
 
     if total_score >= 85:
@@ -374,7 +397,7 @@ display_df = pd.DataFrame(display_rows)
 
 last_sync = st.session_state.get("last_sync_time")
 sync_label = f" | 💾 GitHub 동기화 완료: {last_sync}" if last_sync else ""
-st.caption(f"⚡ 퀀트 멀티 팩터(가치 30% + 수급 35% + 모멘텀 35%) 스코어링 엔진 가동{sync_label}")
+st.caption(f"⚡ NXT 야간장 연동 및 퀀트 멀티 팩터 분석 완료{sync_label}")
 
 # 통합 데이터 테이블
 edited_df = st.data_editor(
