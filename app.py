@@ -207,6 +207,10 @@ st.markdown("### 📡 Stock Cold-Room Terminal", unsafe_allow_html=True)
 if 'stock_df' not in st.session_state:
     st.session_state.stock_df = load_portfolio()
 
+# 에러 방어: 기존 세션이나 원격 데이터에 '그룹' 컬럼이 누락되어 있다면 즉시 채워넣음
+if "그룹" not in st.session_state.stock_df.columns:
+    st.session_state.stock_df.insert(0, "그룹", "본인 주력")
+    
 # 신규 종목 추가 폼 (다중 포트폴리오 그룹핑 지원)
 with st.form("add_stock_form", clear_on_submit=True):
     c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
