@@ -51,14 +51,13 @@ st.markdown("""
        ------------------------------------------------------------- */
     div[data-testid="stDataFrame"] th:nth-child(1), div[data-testid="stDataFrame"] td:nth-child(1) { text-align: center !important; }
     div[data-testid="stDataFrame"] th:nth-child(2), div[data-testid="stDataFrame"] td:nth-child(2) { text-align: center !important; }
-    div[data-testid="stDataFrame"] th:nth-child(3), div[data-testid="stDataFrame"] td:nth-child(3) { text-align: center !important; }
+    div[data-testid="stDataFrame"] th:nth-child(3), div[data-testid="stDataFrame"] td:nth-child(3) { text-align: right !important; }
     div[data-testid="stDataFrame"] th:nth-child(4), div[data-testid="stDataFrame"] td:nth-child(4) { text-align: right !important; }
-    div[data-testid="stDataFrame"] th:nth-child(5), div[data-testid="stDataFrame"] td:nth-child(5) { text-align: right !important; }
+    div[data-testid="stDataFrame"] th:nth-child(5), div[data-testid="stDataFrame"] td:nth-child(5) { text-align: center !important; }
     div[data-testid="stDataFrame"] th:nth-child(6), div[data-testid="stDataFrame"] td:nth-child(6) { text-align: center !important; }
-    div[data-testid="stDataFrame"] th:nth-child(7), div[data-testid="stDataFrame"] td:nth-child(7) { text-align: center !important; }
+    div[data-testid="stDataFrame"] th:nth-child(7), div[data-testid="stDataFrame"] td:nth-child(7) { text-align: right !important; }
     div[data-testid="stDataFrame"] th:nth-child(8), div[data-testid="stDataFrame"] td:nth-child(8) { text-align: right !important; }
-    div[data-testid="stDataFrame"] th:nth-child(9), div[data-testid="stDataFrame"] td:nth-child(9) { text-align: right !important; }
-    div[data-testid="stDataFrame"] th:nth-child(10), div[data-testid="stDataFrame"] td:nth-child(10) { text-align: center !important; }
+    div[data-testid="stDataFrame"] th:nth-child(9), div[data-testid="stDataFrame"] td:nth-child(9) { text-align: center !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -373,7 +372,7 @@ if submitted:
             st.error("등록 실패. 올바른 종목명이나 6자리 코드를 입력하세요.")
 
 # -------------------------------------------------------------
-# 데이터 에디터 테이블 영역
+# 데이터 에디터 테이블 영역 (체크박스 제거 버전)
 # -------------------------------------------------------------
 display_rows = []
 codes = st.session_state.stock_df['코드'].tolist()
@@ -389,7 +388,6 @@ if codes:
         formatted_m_p = f"{raw_m_p:,}" if raw_m_p > 0 else "0"
         
         display_rows.append({
-            "선택": False, 
             "종목명": row["종목명"], 
             "코드": row["코드"],
             "현재가": formatted_m_p,  
@@ -406,29 +404,19 @@ display_df = pd.DataFrame(display_rows)
 st.caption("⚡ [안내] '현재가' 칸에 원하는 가격을 입력하고 엔터를 치면 즉시 반영 및 브리핑에 적용됩니다.")
 
 column_config = {
-    "종목명": st.column_config.TextColumn(disabled=True),
-    "코드": st.column_config.TextColumn(disabled=True),
+    "종목명": st.column_config.TextColumn("종목명", disabled=True),
+    "코드": st.column_config.TextColumn("코드", disabled=True),
     "현재가": st.column_config.TextColumn("현재가", help="야간장 가격 등을 직접 입력하세요 (0이면 정규장 종가 자동 반영)"),
     "현재가(정규장)": st.column_config.TextColumn("현재가(정규장)", disabled=True),
-    "실적": st.column_config.TextColumn(disabled=True),
-    "수급(5D)": st.column_config.TextColumn(disabled=True),
-    "20일선": st.column_config.TextColumn(disabled=True),
-    "RSI": st.column_config.NumberColumn(disabled=True),
-    "의견": st.column_config.TextColumn(disabled=True),
+    "실적": st.column_config.TextColumn("실적", disabled=True),
+    "수급(5D)": st.column_config.TextColumn("수급(5D)", disabled=True),
+    "20일선": st.column_config.TextColumn("20일선", disabled=True),
+    "RSI": st.column_config.NumberColumn("RSI", disabled=True),
+    "의견": st.column_config.TextColumn("의견", disabled=True),
     "eval_price": None 
 }
 
-column_config["선택"] = st.column_config.CheckboxColumn("삭제", disabled=False, default=False)
-
-# on_change=st.rerun을 통해 체크박스나 셀 수정 시 즉시 반영되도록 수정
-edited_df = st.data_editor(
-    display_df, 
-    key="stock_editor", 
-    column_config=column_config, 
-    use_container_width=True, 
-    hide_index=True,
-    on_change=lambda: None
-)
+edited_df = st.data_editor(display_df, key="stock_editor", column_config=column_config, use_container_width=True, hide_index=True)
 
 # 현재가 수정 즉시 저장
 if not edited_df.equals(display_df):
@@ -440,21 +428,24 @@ if not edited_df.equals(display_df):
     st.rerun()
 
 # -------------------------------------------------------------
-# 삭제 버튼 영역 (관리자 로그인 시 항상 노출, 체크된 항목이 있을 때만 활성화)
+# 직관적인 셀렉트박스 기반 영구 삭제 시스템 (관리자 전용)
 # -------------------------------------------------------------
-selected_rows = edited_df[edited_df["선택"] == True]
-
-if st.session_state.is_admin:
+if st.session_state.is_admin and not st.session_state.stock_df.empty:
     st.markdown("<br>", unsafe_allow_html=True)
-    col_del_btn, _ = st.columns([2, 5])
-    with col_del_btn:
-        delete_disabled = (len(selected_rows) == 0)
-        btn_label = f"🗑️ 선택한 종목 삭제 ({len(selected_rows)}개)" if len(selected_rows) > 0 else "🗑️ 삭제할 종목을 체크하세요"
-        if st.button(btn_label, use_container_width=True, type="primary", disabled=delete_disabled):
-            codes_to_remove = selected_rows["코드"].tolist()
-            st.session_state.stock_df = st.session_state.stock_df[~st.session_state.stock_df["코드"].isin(codes_to_remove)].reset_index(drop=True)
+    st.markdown("### 🗑️ 종목 삭제 관리")
+    
+    col_sel, col_btn = st.columns([3, 1])
+    with col_sel:
+        stock_options = {f"{row['종목명']} ({row['코드']})": row['코드'] for _, row in st.session_state.stock_df.iterrows()}
+        selected_stock_label = st.selectbox("삭제할 종목 선택", options=list(stock_options.keys()), label_visibility="collapsed")
+    
+    with col_btn:
+        if st.button("선택 종목 즉시 삭제", use_container_width=True, type="primary"):
+            target_code_to_delete = stock_options[selected_stock_label]
+            st.session_state.stock_df = st.session_state.stock_df[st.session_state.stock_df["코드"] != target_code_to_delete].reset_index(drop=True)
             save_to_github(st.session_state.stock_df)
             if "stock_editor" in st.session_state: del st.session_state["stock_editor"]
+            st.success(f"종목({selected_stock_label})이 삭제되었습니다.")
             st.rerun()
 
 # -------------------------------------------------------------
