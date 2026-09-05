@@ -14,7 +14,7 @@ DATA_FILE = "portfolio.json"
 st.set_page_config(page_title="Stock Cold Room", layout="wide")
 
 # -------------------------------------------------------------
-# 1. 설정 및 GitHub / 텔레그램 연동
+# 1. 설정 및 인증 / GitHub / 텔레그램 연동
 # -------------------------------------------------------------
 def get_config(key):
     try:
@@ -25,6 +25,11 @@ def get_config(key):
         return None
     except Exception:
         return None
+
+ADMIN_PW = get_config("ADMIN_PASSWORD") or "1234"
+
+if "is_admin" not in st.session_state:
+    st.session_state.is_admin = False
 
 def send_telegram_alert(msg):
     token = get_config("TELEGRAM_TOKEN")
@@ -218,30 +223,24 @@ def fetch_full_stock_analysis(code: str):
     except Exception:
         default_res["실적진단"] = "지표 산출불가"
 
-    # 3. 수급 팩터 (네이버 공식 매매동향 직접 파싱 - 외부 라이브러리 의존성 제로)
+    # 3. 수급 팩터 (네이버 공식 매매동향 직접 파싱)
     flow_score = 10
     flow_fetched = False
     frgn_sum = 0
     orgn_sum = 0
 
-    # 1순위: 네이버 증권 외국인/기관 매매동향 웹페이지 직접 파싱
     try:
         url_frgn = f"https://finance.naver.com/item/frgn.naver?code={code}"
         f_res = requests.get(url_frgn, headers=headers, timeout=4)
         f_res.encoding = 'euc-kr'
         f_html = f_res.text
 
-        # 날짜 행(YYYY.MM.DD)을 포함하는 모든 데이터 행 추출
         row_matches = re.findall(r'<tr[^>]*>.*?<td class="tc"[^>]*>.*?[0-9]{4}\.[0-9]{2}\.[0-9]{2}.*?</tr>', f_html, re.DOTALL)
-        
-        parsed_orgn = []
-        parsed_frgn = []
+        parsed_orgn, parsed_frgn = [], []
 
         for row in row_matches[:5]:
-            # 행 내부의 모든 <td> 태그 추출
             tds = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL)
             if len(tds) >= 7:
-                # td[5]: 기관 순매매량, td[6]: 외국인 순매매량
                 raw_orgn = re.sub(r'<[^>]+>', '', tds[5]).replace(',', '').strip()
                 raw_frgn = re.sub(r'<[^>]+>', '', tds[6]).replace(',', '').strip()
                 if raw_orgn.lstrip('+-').isdigit():
@@ -256,17 +255,11 @@ def fetch_full_stock_analysis(code: str):
     except Exception:
         pass
 
-    # 2순위: 네이버 모바일 API 백업 (응답 형태가 list 또는 dict인 경우 모두 대응)
     if not flow_fetched:
         try:
             url_trend = f"https://m.stock.naver.com/api/stock/{code}/trend?pageSize=10"
             trend_res = requests.get(url_trend, headers=headers, timeout=3).json()
-            days_data = []
-            if isinstance(trend_res, list):
-                days_data = trend_res
-            elif isinstance(trend_res, dict):
-                days_data = trend_res.get("bizDays") or trend_res.get("items") or []
-
+            days_data = trend_res if isinstance(trend_res, list) else (trend_res.get("bizDays") or trend_res.get("items") or [])
             if days_data:
                 sub_days = days_data[:5]
                 frgn_sum = sum(int(str(d.get('frgnPureBuyQuant', 0)).replace(',', '')) for d in sub_days)
@@ -275,7 +268,6 @@ def fetch_full_stock_analysis(code: str):
         except Exception:
             pass
 
-    # 수급 결과 판정
     if flow_fetched:
         if frgn_sum > 0 and orgn_sum > 0:
             flow_score = 35
@@ -296,7 +288,7 @@ def fetch_full_stock_analysis(code: str):
         flow_score = 10
         default_res["수급"] = "⚠️ 데이터 집계불가"
 
-    # 4. 모멘텀 & 타이밍 팩터 (RSI & 20일선: 35점 만점)
+    # 4. 모멘텀 & 타이밍 팩터
     tech_score = 15
     try:
         ticker = f"{code}.KS"
@@ -390,27 +382,52 @@ with col_h2:
 
 st.divider()
 
+# 사이드바 관리자 인증 영역
+with st.sidebar:
+    st.markdown("### 🔐 관리자 인증")
+    if not st.session_state.is_admin:
+        pw_input = st.text_input("비밀번호", type="password", placeholder="비밀번호 입력")
+        if st.button("잠금 해제", use_container_width=True):
+            if pw_input == ADMIN_PW:
+                st.session_state.is_admin = True
+                st.success("인증되었습니다.")
+                st.rerun()
+            else:
+                st.error("비밀번호가 일치하지 않습니다.")
+    else:
+        st.success("🔓 관리자 모드 활성화됨")
+        if st.button("로그아웃", use_container_width=True):
+            st.session_state.is_admin = False
+            st.rerun()
+
 if 'stock_df' not in st.session_state:
     st.session_state.stock_df = load_portfolio()
 
-# 신규 종목 등록 폼
+# 신규 종목 등록 폼 (관리자 인증 시에만 등록 가능)
 with st.form("add_stock_form", clear_on_submit=True):
     col_input, col_btn = st.columns([4, 1])
     with col_input:
-        input_name = st.text_input("종목명 또는 종목코드(6자리)", placeholder="예: 한미반도체 또는 042700")
+        input_name = st.text_input(
+            "종목명 또는 종목코드(6자리)", 
+            placeholder="예: 한미반도체 또는 042700 (관리자 인증 필요)" if not st.session_state.is_admin else "예: 한미반도체 또는 042700",
+            disabled=not st.session_state.is_admin
+        )
     with col_btn:
         st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-        submitted = st.form_submit_button("신규 종목 추가")
+        submitted = st.form_submit_button("신규 종목 추가", disabled=not st.session_state.is_admin)
     
-    if submitted and input_name.strip():
-        code = resolve_code(input_name)
-        if not code:
-            st.error("종목을 찾을 수 없습니다. 올바른 6자리 코드를 입력하세요.")
-        else:
-            new_row = pd.DataFrame([{"종목명": input_name.strip(), "코드": code}])
-            st.session_state.stock_df = pd.concat([st.session_state.stock_df, new_row], ignore_index=True)
-            save_to_github(st.session_state.stock_df)
-            st.rerun()
+    if submitted:
+        if not st.session_state.is_admin:
+            st.error("종목 추가 권한이 없습니다. 좌측 사이드바에서 관리자 인증을 완료하세요.")
+        elif input_name.strip():
+            code = resolve_code(input_name)
+            if not code:
+                st.error("종목을 찾을 수 없습니다. 올바른 6자리 코드를 입력하세요.")
+            else:
+                new_row = pd.DataFrame([{"종목명": input_name.strip(), "코드": code}])
+                st.session_state.stock_df = pd.concat([st.session_state.stock_df, new_row], ignore_index=True)
+                save_to_github(st.session_state.stock_df)
+                st.rerun()
 
 # 테이블 데이터 구성
 display_rows = []
@@ -436,21 +453,27 @@ last_sync = st.session_state.get("last_sync_time")
 sync_label = f" | 💾 GitHub 동기화 완료: {last_sync}" if last_sync else ""
 st.caption(f"⚡ 멀티 팩터 분석{sync_label}")
 
-# 통합 데이터 테이블
+# 통합 데이터 테이블 (관리자 미인증 시 체크박스 컬럼 비활성화)
+column_config = {
+    "종목명": st.column_config.TextColumn(disabled=True),
+    "코드": st.column_config.TextColumn(disabled=True),
+    "현재가": st.column_config.NumberColumn(format="%d 원", disabled=True),
+    "실적진단": st.column_config.TextColumn("실적/가치 진단", disabled=True),
+    "수급(5일)": st.column_config.TextColumn(disabled=True),
+    "20일이격": st.column_config.TextColumn(disabled=True),
+    "RSI": st.column_config.NumberColumn(disabled=True),
+    "종합의견": st.column_config.TextColumn("퀀트 종합 의견", disabled=True),
+}
+
+if st.session_state.is_admin:
+    column_config["선택"] = st.column_config.CheckboxColumn("삭제", help="삭제할 종목을 체크하세요", default=False)
+else:
+    column_config["선택"] = st.column_config.CheckboxColumn("삭제", help="관리자 인증 후 삭제 가능", disabled=True, default=False)
+
 edited_df = st.data_editor(
     display_df,
     key="stock_editor",
-    column_config={
-        "선택": st.column_config.CheckboxColumn("삭제", help="삭제할 종목을 체크하세요", default=False),
-        "종목명": st.column_config.TextColumn(disabled=True),
-        "코드": st.column_config.TextColumn(disabled=True),
-        "현재가": st.column_config.NumberColumn(format="%d 원", disabled=True),
-        "실적진단": st.column_config.TextColumn("실적/가치 진단", disabled=True),
-        "수급(5일)": st.column_config.TextColumn(disabled=True),
-        "20일이격": st.column_config.TextColumn(disabled=True),
-        "RSI": st.column_config.NumberColumn(disabled=True),
-        "종합의견": st.column_config.TextColumn("퀀트 종합 의견", disabled=True),
-    },
+    column_config=column_config,
     use_container_width=True,
     hide_index=True
 )
@@ -472,11 +495,13 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# 종목 삭제 버튼
+# 종목 삭제 버튼 (관리자 인증 및 1개 이상 선택 시 활성화)
 selected_rows = edited_df[edited_df["선택"] == True]
 col_del_btn, _ = st.columns([2, 5])
 with col_del_btn:
-    if st.button(f"🗑️ 선택 종목 삭제 ({len(selected_rows)}개)", disabled=(len(selected_rows) == 0)):
+    delete_disabled = (not st.session_state.is_admin) or (len(selected_rows) == 0)
+    del_label = f"🗑️ 선택 종목 삭제 ({len(selected_rows)}개)" if st.session_state.is_admin else "🔒 종목 삭제 (관리자 전용)"
+    if st.button(del_label, disabled=delete_disabled):
         codes_to_remove = selected_rows["코드"].tolist()
         st.session_state.stock_df = st.session_state.stock_df[~st.session_state.stock_df["코드"].isin(codes_to_remove)].reset_index(drop=True)
         save_to_github(st.session_state.stock_df)
