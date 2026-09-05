@@ -12,7 +12,50 @@ import concurrent.futures
 
 DATA_FILE = "portfolio.json"
 
-st.set_page_config(page_title="Stock Cold Room", layout="wide")
+st.set_page_config(page_title="Quantum Terminal", layout="wide")
+
+# =====================================================================
+# [글로벌 탑티어 터미널 커스텀 CSS 디자인 적용]
+# =====================================================================
+st.markdown("""
+<style>
+    /* 전체 배경 및 폰트 세팅 */
+    .stApp {
+        background-color: #0b0f19;
+    }
+    
+    /* 최상단 프리미엄 그라데이션 라인 */
+    .stApp::before {
+        content: "";
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 4px;
+        background: linear-gradient(90deg, #3b82f6, #8b5cf6, #ec4899);
+        z-index: 99999;
+    }
+    
+    /* 기본 헤더/푸터 숨김 처리로 앱 느낌 극대화 */
+    header {visibility: hidden;}
+    footer {visibility: hidden;}
+    
+    /* 입력 폼 컨테이너 고급화 */
+    [data-testid="stForm"] {
+        border: 1px solid #1e293b;
+        border-radius: 12px;
+        background-color: #0f172a;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    }
+    
+    /* 데이터 에디터(테이블) 테두리 세팅 */
+    [data-testid="stDataFrame"] {
+        border: 1px solid #1e293b;
+        border-radius: 8px;
+        overflow: hidden;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # -------------------------------------------------------------
 # 1. 설정 및 인증 / GitHub / 텔레그램 연동
@@ -110,7 +153,7 @@ def save_to_github(df):
         return False
 
 # -------------------------------------------------------------
-# 2. 퀀트 멀티 팩터 분석 엔진 (초고속 병렬 처리 최적화)
+# 2. 퀀트 멀티 팩터 분석 엔진
 # -------------------------------------------------------------
 TICKER_DICT = {
     "삼성전자": "005930", "sk하이닉스": "000660", "한화에어로스페이스": "012450", 
@@ -178,7 +221,7 @@ def fetch_full_stock_analysis(code: str):
             
     default_res["현재가"] = cur_p
 
-    # 2. 밸류에이션 팩터 (PER / EPS - 적자기업(SK이노베이션 등) 예외 완벽 처리)
+    # 2. 밸류에이션 팩터
     val_score = 15
     val_label = "적자/PER N/A"
     per_val = None
@@ -187,7 +230,6 @@ def fetch_full_stock_analysis(code: str):
         url_basic = f"https://finance.naver.com/item/main.naver?code={code}"
         basic_res = requests.get(url_basic, headers=headers, timeout=3).text
         
-        # 음수(-) 또는 공백까지 모두 캡처하도록 정규식 개선
         per_match = re.search(r'id="_per">([^<]+)<', basic_res)
         if per_match:
             raw_per = per_match.group(1).replace(",", "").strip()
@@ -195,7 +237,7 @@ def fetch_full_stock_analysis(code: str):
                 try:
                     per_val = float(raw_per)
                 except ValueError:
-                    per_val = -1.0 # 숫자가 아니면 적자/N/A 처리
+                    per_val = -1.0 
             else:
                 per_val = -1.0
                 
@@ -240,7 +282,7 @@ def fetch_full_stock_analysis(code: str):
     except Exception:
         default_res["실적진단"] = "적자/PER N/A"
 
-    # 3. 수급 팩터 (네이버 공식 매매동향 직접 파싱)
+    # 3. 수급 팩터
     flow_score = 10
     flow_fetched = False
     frgn_sum = 0
@@ -359,7 +401,7 @@ def fetch_full_stock_analysis(code: str):
     alert_key = f"alert_{code}_{datetime.datetime.now().strftime('%Y%m%d')}"
     if total_score >= 85 and alert_key not in st.session_state:
         send_telegram_alert(
-            f"🎯 [Stock Cold-Room 퀀트 포착]\n"
+            f"🎯 [Quantum Terminal 퀀트 포착]\n"
             f"종목코드: {code}\n"
             f"종합점수: {total_score}점 (최상위 등급)\n"
             f"실적: {default_res['실적진단']}\n"
@@ -371,12 +413,11 @@ def fetch_full_stock_analysis(code: str):
     return default_res
 
 # -------------------------------------------------------------
-# 3. 화면 렌더링 (병렬 처리 적용)
+# 3. 화면 렌더링 (병렬 처리 및 프리미엄 디자인 적용)
 # -------------------------------------------------------------
-st.markdown("### 📡 Stock Cold-Room", unsafe_allow_html=True)
-
 @st.cache_data(ttl=15)
-def get_kospi_data():
+def get_kospi_html(update_time_str):
+    """KOSPI 데이터를 파싱하여 디자인된 HTML 메트릭 카드로 반환 (상승: 빨강, 하락: 파랑)"""
     try:
         url = "https://polling.finance.naver.com/api/realtime/domestic/index/KOSPI"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -385,35 +426,76 @@ def get_kospi_data():
         cur = data['closePrice']
         diff = data['compareToPreviousClosePrice']
         rate = data['fluctuationsRatio']
-        sign = "+" if float(diff.replace(",", "")) > 0 else ""
-        return f"KOSPI: {cur} ({sign}{diff}, {sign}{rate}%)"
+        
+        # 상승/하락 색상 및 기호 결정 (한국식: 상승-Red, 하락-Blue)
+        rate_val = float(rate)
+        if rate_val > 0:
+            color = "#ff4b4b" # Red
+            sign = "▲"
+        elif rate_val < 0:
+            color = "#3b82f6" # Blue
+            sign = "▼"
+        else:
+            color = "#94a3b8" # Gray
+            sign = "-"
+            
+        # diff 내부에 있을 수 있는 부호 제거
+        clean_diff = diff.replace("-", "").replace("+", "")
+        clean_rate = rate.replace("-", "").replace("+", "")
+        
+        html = f"""
+        <div style="background: linear-gradient(145deg, #161b22, #0d1117); padding: 16px 24px; border-radius: 12px; border: 1px solid #30363d; display: inline-block; box-shadow: 0 8px 16px rgba(0,0,0,0.4); text-align: left;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <span style="color: #8b949e; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px;">KOSPI Index</span>
+                <span style="color: #484f58; font-size: 10px;">{update_time_str}</span>
+            </div>
+            <div style="display: flex; align-items: baseline; gap: 12px;">
+                <span style="font-size: 32px; font-weight: 800; color: #ffffff; letter-spacing: -0.5px;">{cur}</span>
+                <span style="font-size: 16px; font-weight: 600; color: {color};">
+                    {sign} {clean_diff} ({clean_rate}%)
+                </span>
+            </div>
+        </div>
+        """
+        return html
     except Exception:
-        return "KOSPI 통신 지연"
+        return "<div style='color: gray; font-size: 12px;'>KOSPI 통신 지연</div>"
 
-col_h1, col_h2 = st.columns([2, 1])
-with col_h1:
-    st.markdown(f"**{get_kospi_data()}**")
-with col_h2:
-    now = datetime.datetime.now(ZoneInfo("Asia/Seoul")).strftime("%m-%d %H:%M:%S")
-    st.markdown(f"<div style='text-align: right; color: gray; font-size: 14px;'>갱신 {now} (KST)</div>", unsafe_allow_html=True)
 
-st.divider()
+# 상단 헤더 영역 구성
+col_title, col_kospi = st.columns([1, 1])
+
+with col_title:
+    st.markdown("""
+    <div style="margin-top: 15px; margin-bottom: 30px;">
+        <h1 style="font-family: 'Helvetica Neue', Arial, sans-serif; font-weight: 900; font-size: 36px; color: #f8fafc; margin: 0; letter-spacing: -1.2px;">
+            <span style="color: #3b82f6;">Q</span>UANTUM <span style="font-weight: 300; color: #94a3b8;">TERMINAL</span>
+        </h1>
+        <p style="font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 12px; color: #64748b; margin: 4px 0 0 0; text-transform: uppercase; letter-spacing: 2px;">
+            Institutional-Grade Multi-Factor Equity Dashboard
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+with col_kospi:
+    now_str = datetime.datetime.now(ZoneInfo("Asia/Seoul")).strftime("%H:%M:%S KST")
+    st.markdown(f"<div style='text-align: right;'>{get_kospi_html(now_str)}</div>", unsafe_allow_html=True)
 
 # 사이드바 관리자 인증 영역
 with st.sidebar:
-    st.markdown("### 🔐 관리자 인증")
+    st.markdown("### 🔐 SYSTEM LOGIN")
     if not st.session_state.is_admin:
-        pw_input = st.text_input("비밀번호", type="password", placeholder="비밀번호 입력")
-        if st.button("잠금 해제", use_container_width=True):
+        pw_input = st.text_input("Administrator Password", type="password", placeholder="Enter Password")
+        if st.button("UNLOCK", use_container_width=True):
             if pw_input == ADMIN_PW:
                 st.session_state.is_admin = True
-                st.success("인증되었습니다.")
+                st.success("Access Granted.")
                 st.rerun()
             else:
-                st.error("비밀번호가 일치하지 않습니다.")
+                st.error("Access Denied.")
     else:
-        st.success("🔓 관리자 모드 활성화됨")
-        if st.button("로그아웃", use_container_width=True):
+        st.success("🔓 Administrator Mode Active")
+        if st.button("LOGOUT", use_container_width=True):
             st.session_state.is_admin = False
             st.rerun()
 
@@ -455,7 +537,6 @@ analyzed_results = []
 
 if codes:
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(codes), 15)) as executor:
-        # 모든 종목의 API 요청을 동시에 병렬로 실행
         analyzed_results = list(executor.map(fetch_full_stock_analysis, codes))
 
 for idx, row in st.session_state.stock_df.iterrows():
@@ -477,19 +558,19 @@ for idx, row in st.session_state.stock_df.iterrows():
 display_df = pd.DataFrame(display_rows)
 
 last_sync = st.session_state.get("last_sync_time")
-sync_label = f" | 💾 GitHub 동기화 완료: {last_sync}" if last_sync else ""
-st.caption(f"⚡ 병렬 처리 최적화 완료{sync_label}")
+sync_label = f" | 💾 Data Synced: {last_sync}" if last_sync else ""
+st.caption(f"⚡ QUANTUM ENGINE RUNNING{sync_label}")
 
-# 통합 데이터 테이블 (관리자 미인증 시 체크박스 컬럼 비활성화)
+# 통합 데이터 테이블
 column_config = {
     "종목명": st.column_config.TextColumn(disabled=True),
     "코드": st.column_config.TextColumn(disabled=True),
     "현재가": st.column_config.NumberColumn(format="%d 원", disabled=True),
-    "실적진단": st.column_config.TextColumn("실적/가치 진단", disabled=True),
-    "수급(5일)": st.column_config.TextColumn(disabled=True),
-    "20일이격": st.column_config.TextColumn(disabled=True),
-    "RSI": st.column_config.NumberColumn(disabled=True),
-    "종합의견": st.column_config.TextColumn("퀀트 종합 의견", disabled=True),
+    "실적진단": st.column_config.TextColumn("실적/가치 팩터", disabled=True),
+    "수급(5일)": st.column_config.TextColumn("수급 팩터 (5D)", disabled=True),
+    "20일이격": st.column_config.TextColumn("모멘텀 (20D)", disabled=True),
+    "RSI": st.column_config.NumberColumn("RSI (14D)", disabled=True),
+    "종합의견": st.column_config.TextColumn("퀀트 종합 산출", disabled=True),
 }
 
 if st.session_state.is_admin:
@@ -505,29 +586,31 @@ edited_df = st.data_editor(
     hide_index=True
 )
 
-# 표 하단: 종합의견 및 수급 기준 안내
+# 표 하단: 종합의견 및 수급 기준 안내 (디자인 적용)
 st.markdown(
     """
-    <div style='background-color: #1e2129; padding: 12px 16px; border-radius: 8px; font-size: 13px; color: #d0d4dc; margin-top: 6px; margin-bottom: 12px; border: 1px solid #2d3139;'>
-        <b>📊 퀀트 종합의견 산출 기준 (100점 만점)</b><br>
-        • <b>팩터 가중치</b>: 가치/실적 (30점) + 5일 메이저 수급 (35점) + 기술적 모멘텀/RSI (35점)<br>
-        • <b>등급 구분</b>: 
-        <span style='color: #ff4b4b;'>🔥 <b>강력 매수</b> (85점 이상)</span> &nbsp;|&nbsp; 
-        <span style='color: #21c354;'>🟢 <b>매수</b> (70~84점)</span> &nbsp;|&nbsp; 
-        <span style='color: #faca2b;'>🟡 <b>관망</b> (50~69점)</span> &nbsp;|&nbsp; 
-        <span style='color: #808495;'>🔴 <b>매도</b> (50점 미만)</span><br>
-        • <b>수급 진단 구분</b>: 🔥 쌍끌이매수 / ❄️ 양매도이탈 / 📈 외인매수 / 🏢 기관매수 / ⚖️ 수급 균형(중립) / ⚠️ 데이터 집계불가
+    <div style='background-color: #0f172a; padding: 16px 20px; border-radius: 8px; font-size: 13px; color: #94a3b8; margin-top: 8px; margin-bottom: 24px; border: 1px solid #1e293b; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);'>
+        <b style="color: #e2e8f0; font-size: 14px; letter-spacing: 0.5px;">📊 MULTI-FACTOR SCORING MODEL (MAX 100)</b><br>
+        <div style="margin-top: 8px;">
+            • <b>가중치</b>: 가치/실적 (30%) + 메이저 수급 (35%) + 기술적 모멘텀 (35%)<br>
+            • <b>등급컷</b>: 
+            <span style='color: #ff4b4b; font-weight: 600;'>🔥 강력 매수 (85+)</span> &nbsp;|&nbsp; 
+            <span style='color: #21c354; font-weight: 600;'>🟢 매수 (70+)</span> &nbsp;|&nbsp; 
+            <span style='color: #faca2b; font-weight: 600;'>🟡 관망 (50+)</span> &nbsp;|&nbsp; 
+            <span style='color: #808495; font-weight: 600;'>🔴 매도 (-50)</span><br>
+            • <b>수급구분</b>: 🔥 쌍끌이매수 / ❄️ 양매도이탈 / 📈 외인매수 / 🏢 기관매수 / ⚖️ 수급 균형(중립)
+        </div>
     </div>
     """,
     unsafe_allow_html=True
 )
 
-# 종목 삭제 버튼 (관리자 인증 및 1개 이상 선택 시 활성화)
+# 종목 삭제 버튼
 selected_rows = edited_df[edited_df["선택"] == True]
 col_del_btn, _ = st.columns([2, 5])
 with col_del_btn:
     delete_disabled = (not st.session_state.is_admin) or (len(selected_rows) == 0)
-    del_label = f"🗑️ 선택 종목 삭제 ({len(selected_rows)}개)" if st.session_state.is_admin else "🔒 종목 삭제 (관리자 전용)"
+    del_label = f"🗑️ 선택 종목 삭제 ({len(selected_rows)}개)" if st.session_state.is_admin else "🔒 종목 삭제 (관리자 인증 필요)"
     if st.button(del_label, disabled=delete_disabled):
         codes_to_remove = selected_rows["코드"].tolist()
         st.session_state.stock_df = st.session_state.stock_df[~st.session_state.stock_df["코드"].isin(codes_to_remove)].reset_index(drop=True)
@@ -539,11 +622,10 @@ with col_del_btn:
 # -------------------------------------------------------------
 # 4. 개별 종목 3개월 종가 추이 차트
 # -------------------------------------------------------------
-st.markdown("<br>", unsafe_allow_html=True)
-st.markdown("#### 📈 종목별 3개월 종가 추이")
+st.markdown("<h4 style='color: #e2e8f0; font-weight: 600; margin-top: 10px;'>📈 TECHNICAL CHART (3M)</h4>", unsafe_allow_html=True)
 current_stocks = st.session_state.stock_df["종목명"].dropna().tolist()
 if current_stocks:
-    selected_stock = st.selectbox("차트를 확인할 종목을 선택하세요", current_stocks)
+    selected_stock = st.selectbox("차트를 확인할 종목을 선택하세요", current_stocks, label_visibility="collapsed")
     matched_row = st.session_state.stock_df[st.session_state.stock_df["종목명"] == selected_stock]
     target_code = str(matched_row["코드"].values[0]) if not matched_row.empty else "005930"
     
