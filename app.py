@@ -87,7 +87,8 @@ def load_portfolio():
         return pd.DataFrame(columns=["종목명", "코드", "수동현재가"])
     
     if "수동현재가" not in df.columns:
-        df["수동현재가"] = 0
+        df["수동현재가"] = "0"
+    df["수동현재가"] = df["수동현재가"].astype(str)
     return df[["종목명", "코드", "수동현재가"]].copy()
 
 def save_to_github(df):
@@ -158,8 +159,14 @@ def resolve_stock_info(user_input):
     
     return cleaned, cleaned
 
+def parse_price_to_int(val):
+    """문자열이나 숫자에 콤마가 있든 없든 안전하게 정수로 변환"""
+    if not val: return 0
+    s = re.sub(r'[^\d]', '', str(val))
+    return int(s) if s else 0
+
 # -------------------------------------------------------------
-# 3. 퀀트 분석 엔진 (수동 가격 우선 반영 및 지표 산출)
+# 3. 퀀트 분석 엔진
 # -------------------------------------------------------------
 def fetch_full_stock_analysis(code_or_name, manual_price):
     default_res = {
@@ -169,11 +176,8 @@ def fetch_full_stock_analysis(code_or_name, manual_price):
     
     code = TICKER_DICT.get(code_or_name, code_or_name)
     if not code or not str(code).isdigit() or len(str(code)) != 6:
-        try:
-            p = int(str(manual_price).replace(",", "")) if manual_price else 0
-        except:
-            p = 0
-        default_res["현재가"] = f"{p:,}"
+        p = parse_price_to_int(manual_price)
+        default_res["현재가"] = f"{p:,}" if p > 0 else "0"
         default_res["raw_cur_p"] = p
         return default_res
 
@@ -197,14 +201,9 @@ def fetch_full_stock_analysis(code_or_name, manual_price):
             per_val = -1.0
     except: pass
 
-    # 수동 가격 안전 변환
-    try:
-        m_p = int(str(manual_price).replace(",", "")) if manual_price and str(manual_price).strip() != "" else 0
-    except:
-        m_p = 0
-
-    # 수동가격이 있으면 수동가격 우선, 없으면 정규장 종가
+    m_p = parse_price_to_int(manual_price)
     cur_p = m_p if m_p > 0 else reg_p
+    
     default_res["현재가"] = f"{cur_p:,}" if cur_p > 0 else "0"
     default_res["raw_cur_p"] = cur_p
 
@@ -245,8 +244,6 @@ def fetch_full_stock_analysis(code_or_name, manual_price):
         if len(items) >= 20:
             closes = [float(x.split('|')[4]) for x in items]
             df_c = pd.Series(closes)
-            
-            # 20일 이격도 및 RSI 계산 시 확정된 현재가(cur_p) 반영
             base_p = cur_p if cur_p > 0 else int(df_c.iloc[-1])
             
             ma20 = df_c.rolling(20).mean().iloc[-1]
@@ -347,7 +344,7 @@ if submitted:
     if input_name.strip():
         name, code = resolve_stock_info(input_name.strip())
         if code:
-            new_stock = pd.DataFrame([{"종목명": name, "코드": code, "수동현재가": 0}])
+            new_stock = pd.DataFrame([{"종목명": name, "코드": code, "수동현재가": "0"}])
             st.session_state.stock_df = pd.concat([st.session_state.stock_df, new_stock], ignore_index=True)
             save_to_github(st.session_state.stock_df)
             st.rerun()
@@ -355,11 +352,11 @@ if submitted:
             st.error("등록 실패. 올바른 종목명이나 6자리 코드를 입력하세요.")
 
 # -------------------------------------------------------------
-# 데이터 에디터 테이블 영역
+# 데이터 에디터 테이블 영역 (TextColumn 기반 콤마 포맷팅 적용)
 # -------------------------------------------------------------
 display_rows = []
 codes = st.session_state.stock_df['코드'].tolist()
-manual_prices = st.session_state.stock_df['수동현재가'].tolist() if '수동현재가' in st.session_state.stock_df.columns else [0]*len(codes)
+manual_prices = st.session_state.stock_df['수동현재가'].tolist() if '수동현재가' in st.session_state.stock_df.columns else ["0"]*len(codes)
 
 if codes:
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(codes), 15)) as executor:
@@ -367,46 +364,49 @@ if codes:
     
     for idx, row in st.session_state.stock_df.iterrows():
         ans = analyzed_results[idx]
+        raw_m_p = parse_price_to_int(row["수동현재가"])
+        formatted_m_p = f"{raw_m_p:,}" if raw_m_p > 0 else "0"
+        
         display_rows.append({
             "선택": False, 
             "종목명": row["종목명"], 
             "코드": row["코드"],
-            "수동현재가(원)": int(row["수동현재가"]) if '수동현재가' in row and pd.notnull(row["수동현재가"]) else 0,
+            "수동현재가(원)": formatted_m_p,  # 콤마가 찍힌 문자열로 렌더링
             "현재가(조회/적용)": ans["현재가"], 
             "실적": ans["실적진단"], 
             "수급(5D)": ans["수급"],
             "20일선": ans["20일이격"], 
             "RSI": ans["RSI"], 
             "의견": ans["종합의견"],
-            "raw_price": ans["raw_cur_p"] # 차트 연동용 내부 변수
+            "raw_price": ans["raw_cur_p"] 
         })
 
 display_df = pd.DataFrame(display_rows)
-st.caption("⚡ [안내] '수동현재가(원)' 칸에 원하는 가격을 직접 입력하고 엔터를 치면 즉시 적용 및 브리핑에 반영됩니다.")
+st.caption("⚡ [안내] '수동현재가(원)' 칸을 더블클릭하여 가격(예: 1,662,000 또는 1662000)을 입력하고 엔터를 치면 콤마가 찍히며 즉시 반영됩니다.")
 
 column_config = {
     "종목명": st.column_config.TextColumn(disabled=True),
     "코드": st.column_config.TextColumn(disabled=True),
-    "수동현재가(원)": st.column_config.NumberColumn("수동현재가 (직접수정)", format="%d", help="야간장 가격 등을 직접 입력하세요 (0이면 정규장 종가 자동 반영)"),
+    "수동현재가(원)": st.column_config.TextColumn("수동현재가 (직접수정)", help="야간장 가격 등을 직접 입력하세요 (0이면 정규장 종가 자동 반영)"),
     "현재가(조회/적용)": st.column_config.TextColumn("현재 적용가", disabled=True),
     "실적": st.column_config.TextColumn(disabled=True),
     "수급(5D)": st.column_config.TextColumn(disabled=True),
     "20일선": st.column_config.TextColumn(disabled=True),
     "RSI": st.column_config.NumberColumn(disabled=True),
     "의견": st.column_config.TextColumn(disabled=True),
-    "raw_price": None # 화면 숨김
+    "raw_price": None 
 }
 
 column_config["선택"] = st.column_config.CheckboxColumn("삭제", disabled=not st.session_state.is_admin, default=False)
 
-# 테이블에서 수동현재가를 직접 수정할 수 있게 에디터 제공
 edited_df = st.data_editor(display_df, key="stock_editor", column_config=column_config, use_container_width=True, hide_index=True)
 
 if not edited_df.equals(display_df):
     for idx, row in edited_df.iterrows():
         target_code = row["코드"]
-        new_price = row["수동현재가(원)"]
-        st.session_state.stock_df.loc[st.session_state.stock_df["코드"] == target_code, "수동현재가"] = new_price
+        # 사용자가 입력한 문자열에서 숫자만 추출하여 저장
+        clean_price = str(parse_price_to_int(row["수동현재가(원)"]))
+        st.session_state.stock_df.loc[st.session_state.stock_df["코드"] == target_code, "수동현재가"] = clean_price
     save_to_github(st.session_state.stock_df)
     st.rerun()
 
@@ -426,7 +426,6 @@ def get_ai_analyst_opinion(df, code_name, quant_score, quant_status, current_pri
     if df.empty or len(df) < 60: return ""
     last, prev = df.iloc[-1], df.iloc[-2]
     
-    # 수동가격이 입력되어 있다면, 기존 차트 종가 대신 수동가격 기준으로 이격도 및 밴드 위치를 재정의
     eval_price = current_price if current_price > 0 else last['Close']
     
     is_uptrend = eval_price > ma20 and ma20 > last['MA60']
@@ -468,7 +467,6 @@ if codes:
     tgt_row = st.session_state.stock_df[st.session_state.stock_df["종목명"] == sel_stock]
     tgt_code = tgt_row["코드"].values[0] if not tgt_row.empty else "005930"
     
-    # 해당 종목의 현재 적용가(raw_price) 가져오기
     current_active_price = 0
     if not display_df.empty:
         matched_row = display_df[display_df["종목명"] == sel_stock]
