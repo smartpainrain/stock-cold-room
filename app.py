@@ -158,28 +158,23 @@ def resolve_stock_info(user_input):
     
     return cleaned, cleaned
 
-def safe_parse_price(val):
-    if not val: return 0
-    s = re.sub(r'[^\d]', '', str(val))
-    return int(s) if s else 0
-
 # -------------------------------------------------------------
-# 3. 퀀트 분석 엔진 (안전한 수동 가격 파싱 적용)
+# 3. 퀀트 분석 엔진 (수동 가격 우선 반영 및 지표 산출)
 # -------------------------------------------------------------
 def fetch_full_stock_analysis(code_or_name, manual_price):
     default_res = {
         "현재가": "0", "수급": "⚠️ 데이터 집계불가", "실적진단": "지표 산출불가", 
-        "20일이격": "-", "RSI": 50.0, "종합의견": "🟡 관망 (50점)"
+        "20일이격": "-", "RSI": 50.0, "종합의견": "🟡 관망 (50점)", "raw_cur_p": 0
     }
     
     code = TICKER_DICT.get(code_or_name, code_or_name)
     if not code or not str(code).isdigit() or len(str(code)) != 6:
-        # 수동 가격 방어형 파싱
         try:
             p = int(str(manual_price).replace(",", "")) if manual_price else 0
         except:
             p = 0
         default_res["현재가"] = f"{p:,}"
+        default_res["raw_cur_p"] = p
         return default_res
 
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -208,8 +203,10 @@ def fetch_full_stock_analysis(code_or_name, manual_price):
     except:
         m_p = 0
 
+    # 수동가격이 있으면 수동가격 우선, 없으면 정규장 종가
     cur_p = m_p if m_p > 0 else reg_p
     default_res["현재가"] = f"{cur_p:,}" if cur_p > 0 else "0"
+    default_res["raw_cur_p"] = cur_p
 
     val_score, val_label = 15, "지표 산출불가"
     if per_val is not None:
@@ -248,6 +245,8 @@ def fetch_full_stock_analysis(code_or_name, manual_price):
         if len(items) >= 20:
             closes = [float(x.split('|')[4]) for x in items]
             df_c = pd.Series(closes)
+            
+            # 20일 이격도 및 RSI 계산 시 확정된 현재가(cur_p) 반영
             base_p = cur_p if cur_p > 0 else int(df_c.iloc[-1])
             
             ma20 = df_c.rolling(20).mean().iloc[-1]
@@ -378,11 +377,12 @@ if codes:
             "수급(5D)": ans["수급"],
             "20일선": ans["20일이격"], 
             "RSI": ans["RSI"], 
-            "의견": ans["종합의견"]
+            "의견": ans["종합의견"],
+            "raw_price": ans["raw_cur_p"] # 차트 연동용 내부 변수
         })
 
 display_df = pd.DataFrame(display_rows)
-st.caption("⚡ [안내] '수동현재가(원)' 칸에 원하는 가격을 직접 입력하고 엔터를 치면 즉시 반영됩니다.")
+st.caption("⚡ [안내] '수동현재가(원)' 칸에 원하는 가격을 직접 입력하고 엔터를 치면 즉시 적용 및 브리핑에 반영됩니다.")
 
 column_config = {
     "종목명": st.column_config.TextColumn(disabled=True),
@@ -394,10 +394,12 @@ column_config = {
     "20일선": st.column_config.TextColumn(disabled=True),
     "RSI": st.column_config.NumberColumn(disabled=True),
     "의견": st.column_config.TextColumn(disabled=True),
+    "raw_price": None # 화면 숨김
 }
 
 column_config["선택"] = st.column_config.CheckboxColumn("삭제", disabled=not st.session_state.is_admin, default=False)
 
+# 테이블에서 수동현재가를 직접 수정할 수 있게 에디터 제공
 edited_df = st.data_editor(display_df, key="stock_editor", column_config=column_config, use_container_width=True, hide_index=True)
 
 if not edited_df.equals(display_df):
@@ -406,6 +408,7 @@ if not edited_df.equals(display_df):
         new_price = row["수동현재가(원)"]
         st.session_state.stock_df.loc[st.session_state.stock_df["코드"] == target_code, "수동현재가"] = new_price
     save_to_github(st.session_state.stock_df)
+    st.rerun()
 
 selected_rows = edited_df[edited_df["선택"] == True]
 if st.session_state.is_admin and len(selected_rows) > 0:
@@ -417,14 +420,17 @@ if st.session_state.is_admin and len(selected_rows) > 0:
         st.rerun()
 
 # -------------------------------------------------------------
-# 5. 차트 터미널 및 퀀트 융합 AI 브리핑
+# 5. 차트 터미널 및 수동현재가 연동형 AI 브리핑
 # -------------------------------------------------------------
-def get_ai_analyst_opinion(df, code_name, quant_score, quant_status):
+def get_ai_analyst_opinion(df, code_name, quant_score, quant_status, current_price, ma20):
     if df.empty or len(df) < 60: return ""
     last, prev = df.iloc[-1], df.iloc[-2]
     
-    is_uptrend = last['Close'] > last['MA20'] > last['MA60']
-    is_downtrend = last['Close'] < last['MA20'] < last['MA60']
+    # 수동가격이 입력되어 있다면, 기존 차트 종가 대신 수동가격 기준으로 이격도 및 밴드 위치를 재정의
+    eval_price = current_price if current_price > 0 else last['Close']
+    
+    is_uptrend = eval_price > ma20 and ma20 > last['MA60']
+    is_downtrend = eval_price < ma20 and ma20 < last['MA60']
     trend_status, trend_color = ("정배열 상승 추세", "#ff4b4b") if is_uptrend else ("역배열 하락 추세", "#3b82f6") if is_downtrend else ("추세 전환 및 횡보", "#faca2b")
     
     macd_up = last['MACD'] > last['Signal'] and prev['MACD'] <= prev['Signal']
@@ -432,10 +438,11 @@ def get_ai_analyst_opinion(df, code_name, quant_score, quant_status):
     macd_bull = last['MACD'] > last['Signal']
     macd_status = "🚨 골든크로스 발생" if macd_up else "⚠️ 데드크로스 발생" if macd_dn else "매수 우위 유지" if macd_bull else "매도 우위 지속"
         
-    is_upper, is_lower = last['Close'] >= last['BB_Upper'], last['Close'] <= last['BB_Lower']
+    is_upper = eval_price >= last['BB_Upper']
+    is_lower = eval_price <= last['BB_Lower']
     bb_status = "상단 도달 (과열)" if is_upper else "하단 이탈 (반등기대)" if is_lower else "밴드 내 안정"
 
-    summary_text = f"퀀트 스코어 <b style='color:#fff;'>{quant_score}점({quant_status})</b>. "
+    summary_text = f"현재 적용가(<b>{eval_price:,}원</b>) 기준 퀀트 스코어 <b style='color:#fff;'>{quant_score}점({quant_status})</b>. "
     if quant_score >= 70:
         if is_uptrend: summary_text += "펀더멘털과 기술적 흐름이 완벽히 일치하는 랠리 국면입니다. 수익 극대화를 권장합니다." if not macd_dn else "펀더멘털은 우수하나 단기 과열 징후가 있습니다. 눌림목 분할 매수가 유효합니다."
         elif is_downtrend: summary_text += "우수한 펀더멘털 대비 주가가 과도하게 눌려 있습니다. 바닥 다지기 및 기술적 반등 시 저가 매수를 고려하세요."
@@ -460,6 +467,13 @@ if codes:
     sel_stock = st.selectbox("종목 선택", st.session_state.stock_df["종목명"].tolist(), label_visibility="collapsed")
     tgt_row = st.session_state.stock_df[st.session_state.stock_df["종목명"] == sel_stock]
     tgt_code = tgt_row["코드"].values[0] if not tgt_row.empty else "005930"
+    
+    # 해당 종목의 현재 적용가(raw_price) 가져오기
+    current_active_price = 0
+    if not display_df.empty:
+        matched_row = display_df[display_df["종목명"] == sel_stock]
+        if not matched_row.empty:
+            current_active_price = int(matched_row["raw_price"].values[0])
     
     q_score, q_stat = 50, "🟡 관망"
     if not display_df.empty:
@@ -494,6 +508,7 @@ if codes:
             with t2: st.line_chart(df_v[['MACD', 'Signal']])
             with t3: st.bar_chart(df_v['Volume'])
             
-            st.markdown(get_ai_analyst_opinion(df_c, sel_stock, q_score, q_stat), unsafe_allow_html=True)
+            latest_ma20 = df_c['MA20'].iloc[-1]
+            st.markdown(get_ai_analyst_opinion(df_c, sel_stock, q_score, q_stat, current_active_price, latest_ma20), unsafe_allow_html=True)
     except Exception as e:
         st.info("차트를 로드할 수 없습니다.")
