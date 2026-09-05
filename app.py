@@ -611,20 +611,31 @@ with col_del_btn:
         st.rerun()
 
 # -------------------------------------------------------------
-# 4. 차트 터미널 및 지능형 AI 애널리스트 브리핑 (기능 대폭 강화)
+# 4. 차트 터미널 및 퀀트 융합형 AI 애널리스트 브리핑
 # -------------------------------------------------------------
-def get_ai_analyst_opinion(df, code_name):
-    """3가지 지표(추세, 모멘텀, 변동성)의 교차 분석을 통해 동적으로 요약 리포트를 생성합니다."""
+def get_ai_analyst_opinion(df, code_name, quant_score, quant_status):
+    """
+    상단 테이블의 퀀트 스코어(실적+수급)와 하단 차트 지표(추세+모멘텀+변동성)를 
+    결합하여 입체적인 시나리오를 도출해내는 AI 추론 알고리즘
+    """
     if df.empty or len(df) < 60:
         return "<div style='color: #94a3b8;'>데이터가 부족하여 분석할 수 없습니다.</div>"
     
     last = df.iloc[-1]
     prev = df.iloc[-2]
     
-    # 1. 추세 분석 (이동평균선)
+    # 1. 기술적 분석 기초값
     is_uptrend = last['Close'] > last['MA20'] and last['MA20'] > last['MA60']
     is_downtrend = last['Close'] < last['MA20'] and last['MA20'] < last['MA60']
     
+    macd_cross_up = last['MACD'] > last['Signal'] and prev['MACD'] <= prev['Signal']
+    macd_cross_down = last['MACD'] < last['Signal'] and prev['MACD'] >= prev['Signal']
+    macd_bull = last['MACD'] > last['Signal']
+    
+    is_upper = last['Close'] >= last['BB_Upper']
+    is_lower = last['Close'] <= last['BB_Lower']
+    
+    # 2. 기초 상태 텍스트 렌더링
     if is_uptrend:
         trend_status = "정배열 상승 추세"
         trend_color = "#ff4b4b"
@@ -632,27 +643,18 @@ def get_ai_analyst_opinion(df, code_name):
         trend_status = "역배열 하락 추세"
         trend_color = "#3b82f6"
     else:
-        trend_status = "추세 전환 및 혼조 구간"
+        trend_status = "추세 전환 및 횡보 구간"
         trend_color = "#faca2b"
         
-    # 2. 모멘텀 분석 (MACD)
-    macd_cross_up = last['MACD'] > last['Signal'] and prev['MACD'] <= prev['Signal']
-    macd_cross_down = last['MACD'] < last['Signal'] and prev['MACD'] >= prev['Signal']
-    macd_bull = last['MACD'] > last['Signal']
-    
     if macd_cross_up:
-        macd_status = "🚨 MACD 골든크로스 발생 (단기 상승 모멘텀 강화)"
+        macd_status = "🚨 MACD 골든크로스 발생 (단기 모멘텀 상방)"
     elif macd_cross_down:
-        macd_status = "⚠️ MACD 데드크로스 발생 (단기 하락 주의)"
+        macd_status = "⚠️ MACD 데드크로스 발생 (단기 모멘텀 하방)"
     elif macd_bull:
         macd_status = "MACD 매수 우위 유지 (시그널 상회)"
     else:
         macd_status = "MACD 매도 우위 (시그널 하회)"
         
-    # 3. 변동성 분석 (Bollinger Bands)
-    is_upper = last['Close'] >= last['BB_Upper']
-    is_lower = last['Close'] <= last['BB_Lower']
-    
     if is_upper:
         bb_status = "볼린저 밴드 상단 도달 (과열 경계)"
     elif is_lower:
@@ -660,36 +662,39 @@ def get_ai_analyst_opinion(df, code_name):
     else:
         bb_status = "밴드 내 안정적 주가 흐름"
 
-    # --- 동적 AI 종합 요약 생성 로직 ---
-    summary_text = ""
-    if is_uptrend:
-        if macd_cross_down or (not macd_bull and is_upper):
-            summary_text = "기존의 상승 추세가 이어지고 있으나, 모멘텀 지표의 하락 반전(데드크로스) 또는 밴드 상단 저항으로 인해 단기 조정 리스크가 부각되고 있습니다. 추격 매수는 자제하고 일부 차익 실현을 통한 리스크 관리를 권장합니다."
-        elif macd_bull:
-            summary_text = "이평선 정배열의 견조한 상승 추세 속에서 MACD 매수 모멘텀이 잘 유지되고 있습니다. 밴드 상단 돌파 시 추가 랠리가 가능하므로, 20일선을 주요 지지선으로 설정하고 추세 추종(Trend-following) 관점을 유지하는 것이 유리합니다."
+    # 3. 퀀트 + 기술적 지표 융합(Synthesis) 시나리오 추론
+    summary_text = f"현재 퀀트 시스템 종합 점수는 <b style='color:#ffffff;'>{quant_score}점({quant_status})</b>입니다. "
+    
+    if quant_score >= 70: # 펀더멘털 & 수급 우수
+        if is_uptrend:
+            if macd_cross_down or (not macd_bull and is_upper):
+                summary_text += "실적과 메이저 수급 등 펀더멘털이 우수하며 기본 추세도 견조합니다. 다만 차트상 단기 과열 징후와 모멘텀 둔화 시그널이 발생했으므로, 밴드 하단이나 20일선 눌림목을 활용한 분할 매수 전략이 가장 유효합니다."
+            else:
+                summary_text += "가치/수급 펀더멘털과 기술적 흐름(정배열+MACD 상회)이 완벽하게 일치하는 강력한 랠리 국면입니다. 신규 진입도 가능하며, 보유자는 추세가 꺾이기 전까지 수익을 극대화하는 것을 권장합니다."
+        elif is_downtrend:
+            if macd_cross_up or (macd_bull and is_lower):
+                summary_text += "매우 우수한 퀀트 펀더멘털에도 불구하고 주가는 역배열 하락 추세였습니다. 그러나 최근 밴드 하단 지지를 받고 MACD 반전 시그널이 포착되었으므로, 저평가 매력을 노리고 1차 저가 매집에 돌입하기 좋은 절호의 기회입니다."
+            else:
+                summary_text += "잠재적인 수급과 실적 밸류에이션은 훌륭하나, 아직 차트상 하방 압력이 진정되지 않았습니다. 바닥이 완전히 확인되지 않았으므로 섣부른 진입보다는 MACD 골든크로스 등 기술적 추세 반전을 확인한 뒤 진입하세요."
         else:
-            summary_text = "상승 추세 내에서 단기 숨고르기가 진행 중입니다. 주요 지지선(20일선) 이탈 여부를 확인하며 차분히 대응하시기 바랍니다."
-    elif is_downtrend:
-        if macd_cross_up or (macd_bull and is_lower):
-            summary_text = "단기 낙폭 과대에 따른 기술적 반등 시그널(골든크로스 및 밴드 하단 지지)이 포착되었습니다. 다만 중장기 이평선이 역배열 상태이므로, 본격적인 추세 전환보다는 짧은 호흡의 단기 트레이딩 관점 접근이 바람직합니다."
+            summary_text += "퀀트 지표가 매우 우수해 중장기 전망이 밝은 가운데, 차트는 방향성을 응축하는 횡보 국면입니다. 이러한 박스권 횡보는 대개 2차 상승을 위한 매집 과정일 확률이 높으므로 비중을 확대해 볼 만한 위치입니다."
+            
+    else: # 펀더멘털 & 수급 부족 또는 혼조 (관망/매도)
+        if is_uptrend:
+            summary_text += "차트상 상승 추세를 유지하고 있으나, 수급 이탈이나 고평가 밸류에이션 부담 등으로 퀀트 종합 점수가 저조합니다. 펀더멘털의 뒷받침이 약하므로, 철저하게 기술적 지표와 손절선(20일선)에 의존하는 짧은 단기 트레이딩 관점으로만 접근하시기 바랍니다."
+        elif is_downtrend:
+            summary_text += "퀀트 지표(메이저 양매도 이탈 등)와 기술적 차트(역배열)가 동시에 강력한 부정적 시그널을 보내고 있습니다. 추가 하락 리스크가 매우 높으므로 매수를 자제하고 철저히 관망하는 것을 권장합니다."
         else:
-            summary_text = "완연한 역배열 하락 추세 속에서 하방 압력이 지속되고 있습니다. 아직 뚜렷한 바닥 확인 시그널이 부재하므로, 이른 물타기나 신규 진입을 철저히 지양하고 관망하는 것을 강력히 권장합니다."
-    else:
-        if macd_cross_up:
-            summary_text = "주가가 이평선 밀집 수렴 구간을 지나며 골든크로스를 동반한 상방 턴어라운드 시도를 하고 있습니다. 새로운 상승 추세 형성의 초입일 가능성이 있으므로 분할 매수로 대응해 볼 만한 유의미한 변곡점입니다."
-        elif macd_cross_down:
-            summary_text = "혼조세 속에서 모멘텀이 약화되며 하단 지지력을 테스트하고 있습니다. 밴드 하단 이탈 시 실망 매물이 출회될 수 있으므로 지지선 붕괴 시 리스크 관리에 만전을 기하시기 바랍니다."
-        else:
-            summary_text = "뚜렷한 방향성을 상실한 채 이평선 부근에서 에너지를 응축하는 횡보 국면입니다. 향후 MACD 모멘텀의 방향과 볼린저 밴드 이탈(상향/하향) 방향에 따라 새로운 추세가 결정될 것이므로 확인 후 진입하는 박스권 트레이딩이 유효합니다."
+            summary_text += "수급과 실적 모멘텀이 뚜렷하지 않아 퀀트 점수가 중립 이하이며, 차트 역시 방향성을 잃고 횡보하고 있습니다. 확실한 메이저 수급 유입이나 밴드 상단 돌파가 확인될 때까지는 자금을 묶어두지 말고 관망하는 것이 좋습니다."
 
     html = f"""
     <div style="background-color: #1e293b; border-left: 4px solid {trend_color}; padding: 18px; border-radius: 6px; margin-top: 16px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
-        <h5 style="color: #f8fafc; margin-top: 0; font-size: 16px; margin-bottom: 12px;">🤖 AI 퀀트 차트 분석 리포트 : {code_name}</h5>
+        <h5 style="color: #f8fafc; margin-top: 0; font-size: 16px; margin-bottom: 12px;">🤖 AI 퀀트 차트 애널리스트 리포트 : {code_name}</h5>
         <ul style="color: #cbd5e1; font-size: 14px; line-height: 1.8; margin-bottom: 0; padding-left: 20px;">
             <li><b>현재 추세:</b> <span style="color: {trend_color}; font-weight: 600;">{trend_status}</span></li>
             <li><b>모멘텀 (MACD):</b> {macd_status}</li>
             <li><b>변동성 (Bollinger):</b> {bb_status}</li>
-            <li style="margin-top: 8px;"><b>AI 종합 요약:</b> <span style="color: #f1f5f9;">{summary_text}</span></li>
+            <li style="margin-top: 10px;"><b>💡 퀀트-차트 융합 전략:</b> <span style="color: #e2e8f0;">{summary_text}</span></li>
         </ul>
     </div>
     """
@@ -703,34 +708,42 @@ if current_stocks:
     matched_row = st.session_state.stock_df[st.session_state.stock_df["종목명"] == selected_stock]
     target_code = str(matched_row["코드"].values[0]) if not matched_row.empty else "005930"
     
+    # 상단 테이블에서 해당 종목의 퀀트 스코어/상태 파싱
+    quant_score = 50
+    quant_status = "🟡 관망"
+    if not display_df.empty:
+        matched_display = display_df[display_df["종목명"] == selected_stock]
+        if not matched_display.empty:
+            opinion_str = matched_display["종합의견"].values[0]
+            # 예: "🔥 강력 매수 (85점)" -> 숫자 85 추출
+            match = re.search(r'\((\d+)점\)', opinion_str)
+            if match:
+                quant_score = int(match.group(1))
+            # 상태 문자열 추출
+            quant_status = opinion_str.split('(')[0].strip()
+    
     if target_code:
         try:
-            # 6개월치 데이터 로드 (이동평균 등 보조지표 계산을 위해 넉넉히 가져옴)
             hist = yf.Ticker(f"{target_code}.KS").history(period="6mo")
             if hist.empty:
                 hist = yf.Ticker(f"{target_code}.KQ").history(period="6mo")
                 
             if not hist.empty and len(hist) > 60:
-                # 보조지표 계산
                 df_chart = hist[['Close', 'Volume']].copy()
                 df_chart['MA20'] = df_chart['Close'].rolling(window=20).mean()
                 df_chart['MA60'] = df_chart['Close'].rolling(window=60).mean()
                 
-                # 볼린저 밴드
                 std20 = df_chart['Close'].rolling(window=20).std()
                 df_chart['BB_Upper'] = df_chart['MA20'] + (std20 * 2)
                 df_chart['BB_Lower'] = df_chart['MA20'] - (std20 * 2)
                 
-                # MACD
                 ema12 = df_chart['Close'].ewm(span=12, adjust=False).mean()
                 ema26 = df_chart['Close'].ewm(span=26, adjust=False).mean()
                 df_chart['MACD'] = ema12 - ema26
                 df_chart['Signal'] = df_chart['MACD'].ewm(span=9, adjust=False).mean()
                 
-                # 최근 3개월 데이터만 슬라이싱하여 시각화 (초기 계산 왜곡 방지)
                 df_view = df_chart.last("90D")
                 
-                # 차트 탭 구성
                 tab1, tab2, tab3 = st.tabs(["💰 가격 및 이평선 (Price & Bands)", "📉 모멘텀 (MACD)", "📊 거래량 (Volume)"])
                 
                 with tab1:
@@ -740,8 +753,8 @@ if current_stocks:
                 with tab3:
                     st.bar_chart(df_view['Volume'])
                 
-                # 하단 추론형 AI 애널리스트 브리핑 출력
-                st.markdown(get_ai_analyst_opinion(df_chart, selected_stock), unsafe_allow_html=True)
+                # 상단 퀀트 점수를 AI 애널리스트 함수에 전달하여 융합 브리핑 생성
+                st.markdown(get_ai_analyst_opinion(df_chart, selected_stock, quant_score, quant_status), unsafe_allow_html=True)
                 
             else:
                 st.info("차트 및 지표를 계산하기 위한 시세 데이터가 부족합니다.")
