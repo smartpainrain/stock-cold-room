@@ -12,7 +12,7 @@ import concurrent.futures
 
 DATA_FILE = "portfolio.json"
 
-st.set_page_config(page_title="Quantum Terminal", layout="wide")
+st.set_page_config(page_title="Stock Cold-Room", layout="wide")
 
 # =====================================================================
 # [글로벌 탑티어 터미널 커스텀 CSS 디자인 적용]
@@ -401,7 +401,7 @@ def fetch_full_stock_analysis(code: str):
     alert_key = f"alert_{code}_{datetime.datetime.now().strftime('%Y%m%d')}"
     if total_score >= 85 and alert_key not in st.session_state:
         send_telegram_alert(
-            f"🎯 [Quantum Terminal 퀀트 포착]\n"
+            f"🎯 [Stock Cold-Room 퀀트 포착]\n"
             f"종목코드: {code}\n"
             f"종합점수: {total_score}점 (최상위 등급)\n"
             f"실적: {default_res['실적진단']}\n"
@@ -417,7 +417,6 @@ def fetch_full_stock_analysis(code: str):
 # -------------------------------------------------------------
 @st.cache_data(ttl=15)
 def get_kospi_html(update_time_str):
-    """KOSPI 데이터를 파싱하여 디자인된 HTML 메트릭 카드로 반환 (상승: 빨강, 하락: 파랑)"""
     try:
         url = "https://polling.finance.naver.com/api/realtime/domestic/index/KOSPI"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -427,19 +426,17 @@ def get_kospi_html(update_time_str):
         diff = data['compareToPreviousClosePrice']
         rate = data['fluctuationsRatio']
         
-        # 상승/하락 색상 및 기호 결정 (한국식: 상승-Red, 하락-Blue)
         rate_val = float(rate)
         if rate_val > 0:
-            color = "#ff4b4b" # Red
+            color = "#ff4b4b" 
             sign = "▲"
         elif rate_val < 0:
-            color = "#3b82f6" # Blue
+            color = "#3b82f6" 
             sign = "▼"
         else:
-            color = "#94a3b8" # Gray
+            color = "#94a3b8" 
             sign = "-"
             
-        # diff 내부에 있을 수 있는 부호 제거
         clean_diff = diff.replace("-", "").replace("+", "")
         clean_rate = rate.replace("-", "").replace("+", "")
         
@@ -462,14 +459,13 @@ def get_kospi_html(update_time_str):
         return "<div style='color: gray; font-size: 12px;'>KOSPI 통신 지연</div>"
 
 
-# 상단 헤더 영역 구성
 col_title, col_kospi = st.columns([1, 1])
 
 with col_title:
     st.markdown("""
     <div style="margin-top: 15px; margin-bottom: 30px;">
         <h1 style="font-family: 'Helvetica Neue', Arial, sans-serif; font-weight: 900; font-size: 36px; color: #f8fafc; margin: 0; letter-spacing: -1.2px;">
-            <span style="color: #3b82f6;">Q</span>UANTUM <span style="font-weight: 300; color: #94a3b8;">TERMINAL</span>
+            Stock-Cold-Room
         </h1>
         <p style="font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 12px; color: #64748b; margin: 4px 0 0 0; text-transform: uppercase; letter-spacing: 2px;">
             Institutional-Grade Multi-Factor Equity Dashboard
@@ -502,7 +498,7 @@ with st.sidebar:
 if 'stock_df' not in st.session_state:
     st.session_state.stock_df = load_portfolio()
 
-# 신규 종목 등록 폼 (관리자 인증 시에만 등록 가능)
+# 신규 종목 등록 폼
 with st.form("add_stock_form", clear_on_submit=True):
     col_input, col_btn = st.columns([4, 1])
     with col_input:
@@ -528,9 +524,7 @@ with st.form("add_stock_form", clear_on_submit=True):
                 save_to_github(st.session_state.stock_df)
                 st.rerun()
 
-# -------------------------------------------------------------
-# 초고속 멀티스레딩(병렬 처리) 데이터 수집
-# -------------------------------------------------------------
+# 멀티스레딩(병렬 처리) 데이터 수집
 display_rows = []
 codes = st.session_state.stock_df['코드'].tolist()
 analyzed_results = []
@@ -559,9 +553,8 @@ display_df = pd.DataFrame(display_rows)
 
 last_sync = st.session_state.get("last_sync_time")
 sync_label = f" | 💾 Data Synced: {last_sync}" if last_sync else ""
-st.caption(f"⚡ QUANTUM ENGINE RUNNING{sync_label}")
+st.caption(f"⚡ 퀀트 팩터 엔진 가동 중{sync_label}")
 
-# 통합 데이터 테이블
 column_config = {
     "종목명": st.column_config.TextColumn(disabled=True),
     "코드": st.column_config.TextColumn(disabled=True),
@@ -586,7 +579,6 @@ edited_df = st.data_editor(
     hide_index=True
 )
 
-# 표 하단: 종합의견 및 수급 기준 안내 (디자인 적용)
 st.markdown(
     """
     <div style='background-color: #0f172a; padding: 16px 20px; border-radius: 8px; font-size: 13px; color: #94a3b8; margin-top: 8px; margin-bottom: 24px; border: 1px solid #1e293b; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);'>
@@ -605,7 +597,6 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# 종목 삭제 버튼
 selected_rows = edited_df[edited_df["선택"] == True]
 col_del_btn, _ = st.columns([2, 5])
 with col_del_btn:
@@ -620,23 +611,107 @@ with col_del_btn:
         st.rerun()
 
 # -------------------------------------------------------------
-# 4. 개별 종목 3개월 종가 추이 차트
+# 4. 차트 터미널 및 AI 애널리스트 브리핑 (기능 대폭 강화)
 # -------------------------------------------------------------
-st.markdown("<h4 style='color: #e2e8f0; font-weight: 600; margin-top: 10px;'>📈 TECHNICAL CHART (3M)</h4>", unsafe_allow_html=True)
+def get_ai_analyst_opinion(df, code_name):
+    """지표를 분석하여 AI 퀀트 의견을 생성하는 함수"""
+    if df.empty or len(df) < 60:
+        return "<div style='color: #94a3b8;'>데이터가 부족하여 분석할 수 없습니다.</div>"
+    
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+    
+    # 1. 추세 분석 (이동평균선)
+    if last['Close'] > last['MA20'] and last['MA20'] > last['MA60']:
+        trend_status = "정배열 상승 추세"
+        trend_color = "#ff4b4b"
+    elif last['Close'] < last['MA20'] and last['MA20'] < last['MA60']:
+        trend_status = "역배열 하락 추세"
+        trend_color = "#3b82f6"
+    else:
+        trend_status = "추세 전환 및 혼조 구간"
+        trend_color = "#faca2b"
+        
+    # 2. 모멘텀 분석 (MACD)
+    if last['MACD'] > last['Signal'] and prev['MACD'] <= prev['Signal']:
+        macd_status = "🚨 MACD 골든크로스 발생 (단기 상승 모멘텀 강화)"
+    elif last['MACD'] < last['Signal'] and prev['MACD'] >= prev['Signal']:
+        macd_status = "⚠️ MACD 데드크로스 발생 (단기 하락 주의)"
+    elif last['MACD'] > last['Signal']:
+        macd_status = "MACD 매수 우위 유지 (시그널 상회)"
+    else:
+        macd_status = "MACD 매도 우위 (시그널 하회)"
+        
+    # 3. 변동성 분석 (Bollinger Bands)
+    if last['Close'] >= last['BB_Upper']:
+        bb_status = "볼린저 밴드 상단 도달 (과열 경계)"
+    elif last['Close'] <= last['BB_Lower']:
+        bb_status = "볼린저 밴드 하단 이탈 (기술적 반등 기대)"
+    else:
+        bb_status = "밴드 내 안정적 주가 흐름"
+
+    html = f"""
+    <div style="background-color: #1e293b; border-left: 4px solid {trend_color}; padding: 18px; border-radius: 6px; margin-top: 16px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
+        <h5 style="color: #f8fafc; margin-top: 0; font-size: 16px; margin-bottom: 12px;">🤖 AI 퀀트 차트 분석 리포트 : {code_name}</h5>
+        <ul style="color: #cbd5e1; font-size: 14px; line-height: 1.8; margin-bottom: 0; padding-left: 20px;">
+            <li><b>현재 추세:</b> <span style="color: {trend_color}; font-weight: 600;">{trend_status}</span></li>
+            <li><b>모멘텀 (MACD):</b> {macd_status}</li>
+            <li><b>변동성 (Bollinger):</b> {bb_status}</li>
+            <li><b>AI 종합 요약:</b> 현재 주가는 <b>{trend_status}</b>에 위치해 있으며, <b>{bb_status.split('(')[0].strip()}</b> 상태입니다. {macd_status.split('(')[0].strip()} 특징을 보이고 있으므로 이에 맞춘 매매 전략이 필요합니다.</li>
+        </ul>
+    </div>
+    """
+    return html
+
+st.markdown("<h4 style='color: #e2e8f0; font-weight: 600; margin-top: 30px;'>📈 ADVANCED CHART TERMINAL</h4>", unsafe_allow_html=True)
 current_stocks = st.session_state.stock_df["종목명"].dropna().tolist()
+
 if current_stocks:
-    selected_stock = st.selectbox("차트를 확인할 종목을 선택하세요", current_stocks, label_visibility="collapsed")
+    selected_stock = st.selectbox("종목 선택", current_stocks, label_visibility="collapsed")
     matched_row = st.session_state.stock_df[st.session_state.stock_df["종목명"] == selected_stock]
     target_code = str(matched_row["코드"].values[0]) if not matched_row.empty else "005930"
     
     if target_code:
         try:
-            chart_data = yf.Ticker(f"{target_code}.KS").history(period="3mo")['Close']
-            if chart_data.empty:
-                chart_data = yf.Ticker(f"{target_code}.KQ").history(period="3mo")['Close']
-            if not chart_data.empty:
-                st.line_chart(chart_data)
+            # 6개월치 데이터 로드 (이동평균 등 보조지표 계산을 위해 넉넉히 가져옴)
+            hist = yf.Ticker(f"{target_code}.KS").history(period="6mo")
+            if hist.empty:
+                hist = yf.Ticker(f"{target_code}.KQ").history(period="6mo")
+                
+            if not hist.empty and len(hist) > 60:
+                # 보조지표 계산
+                df_chart = hist[['Close', 'Volume']].copy()
+                df_chart['MA20'] = df_chart['Close'].rolling(window=20).mean()
+                df_chart['MA60'] = df_chart['Close'].rolling(window=60).mean()
+                
+                # 볼린저 밴드
+                std20 = df_chart['Close'].rolling(window=20).std()
+                df_chart['BB_Upper'] = df_chart['MA20'] + (std20 * 2)
+                df_chart['BB_Lower'] = df_chart['MA20'] - (std20 * 2)
+                
+                # MACD
+                ema12 = df_chart['Close'].ewm(span=12, adjust=False).mean()
+                ema26 = df_chart['Close'].ewm(span=26, adjust=False).mean()
+                df_chart['MACD'] = ema12 - ema26
+                df_chart['Signal'] = df_chart['MACD'].ewm(span=9, adjust=False).mean()
+                
+                # 최근 3개월 데이터만 슬라이싱하여 시각화 (초기 계산 왜곡 방지)
+                df_view = df_chart.last("90D")
+                
+                # 차트 탭 구성
+                tab1, tab2, tab3 = st.tabs(["💰 가격 및 이평선 (Price & Bands)", "📉 모멘텀 (MACD)", "📊 거래량 (Volume)"])
+                
+                with tab1:
+                    st.line_chart(df_view[['Close', 'MA20', 'MA60', 'BB_Upper', 'BB_Lower']])
+                with tab2:
+                    st.line_chart(df_view[['MACD', 'Signal']])
+                with tab3:
+                    st.bar_chart(df_view['Volume'])
+                
+                # 하단 AI 애널리스트 브리핑 출력
+                st.markdown(get_ai_analyst_opinion(df_chart, selected_stock), unsafe_allow_html=True)
+                
             else:
-                st.info("시세 데이터를 가져올 수 없습니다.")
+                st.info("차트 및 지표를 계산하기 위한 시세 데이터가 부족합니다.")
         except Exception:
             st.info("차트 통신 지연 중입니다.")
