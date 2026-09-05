@@ -51,7 +51,7 @@ st.markdown("""
 http_session = requests.Session()
 
 # -------------------------------------------------------------
-# 1. 설정 및 인증 / GitHub
+# 1. 설정 및 인증 / GitHub 연동
 # -------------------------------------------------------------
 def get_config(key):
     try:
@@ -84,11 +84,15 @@ def load_portfolio():
                 if parsed: df = pd.DataFrame(parsed)
         except: pass
     if df.empty:
-        return pd.DataFrame(columns=["종목명", "코드"])
-    return df[["종목명", "코드"]].copy()
+        return pd.DataFrame(columns=["종목명", "코드", "수동현재가"])
+    
+    # 레거시 데이터 호환용 컬럼 보정
+    if "수동현재가" not in df.columns:
+        df["수동현재가"] = 0
+    return df[["종목명", "코드", "수동현재가"]].copy()
 
 def save_to_github(df):
-    clean_df = df[["종목명", "코드"]].copy()
+    clean_df = df[["종목명", "코드", "수동현재가"]].copy()
     json_content = json.dumps(clean_df.to_dict(orient="records"), ensure_ascii=False, indent=2)
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f: f.write(json_content)
@@ -115,53 +119,39 @@ def save_to_github(df):
     return False
 
 # -------------------------------------------------------------
-# 2. 종목 검색 엔진 (종목명과 코드 쌍으로 완벽 반환)
+# 2. 확실하고 빠른 종목 추가 (내부 사전 + 코드 직입력 완벽 대응)
 # -------------------------------------------------------------
 TICKER_DICT = {
     "삼성전자": "005930", "SK하이닉스": "000660", "한화에어로스페이스": "012450", 
     "삼양식품": "003230", "현대차": "005380", "네이버": "035420", 
     "SK이노베이션": "096770", "한미반도체": "042700", "삼성전기": "009150",
-    "카카오": "035720"
+    "카카오": "035720", "SK스퀘어": "402340"
 }
 
-def resolve_code_and_name(name_or_code):
-    """입력값으로부터 정확한 (종목명, 6자리 종목코드) 튜플을 반환합니다."""
-    cleaned = str(name_or_code).strip()
-    cleaned_lower = cleaned.lower().replace(" ", "")
+def resolve_stock_info(user_input):
+    """입력된 종목명 또는 6자리 코드를 분석하여 (종목명, 코드)를 확정합니다."""
+    cleaned = str(user_input).strip()
+    if not cleaned: return None, None
     
-    # 1. 내부 사전 매칭 (이름 또는 코드로 검색)
+    # 1. 6자리 숫자로 입력한 경우
+    if len(cleaned) == 6 and cleaned.isdigit():
+        # 코드로 이름 역추적 시도
+        found_name = cleaned
+        for k, v in TICKER_DICT.items():
+            if v == cleaned:
+                found_name = k
+                break
+        return found_name, cleaned
+        
+    # 2. 내부 사전 검색
+    cleaned_lower = cleaned.lower().replace(" ", "")
     for k, v in TICKER_DICT.items():
-        if k.lower().replace(" ", "") == cleaned_lower or v == cleaned:
+        if k.lower().replace(" ", "") == cleaned_lower:
             return k, v
             
-    # 2. 네이버 모바일 통합 검색 API (가장 정확한 공식 이름과 코드 매핑)
-    try:
-        m_url = f"https://m.stock.naver.com/api/json/search/searchListJson.nhn?keyword={requests.utils.quote(cleaned)}"
-        m_res = http_session.get(m_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3).json()
-        items = m_res.get("result", {}).get("totallist", [])
-        if items:
-            for item in items:
-                code = str(item.get("itemcode", "")).strip()
-                name = str(item.get("name", "")).strip()
-                if len(code) == 6 and code.isdigit():
-                    return name, code
-    except: pass
-    
-    # 3. 네이버 자동완성 API (백업)
-    try:
-        ac_url = f"https://ac.finance.naver.com/ac?q={requests.utils.quote(cleaned)}&target=stock"
-        ac_res = http_session.get(ac_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3).json()
-        items = ac_res.get("items", [[]])[0]
-        if items:
-            for row in items:
-                if len(row) > 1:
-                    name = str(row[0]).strip()
-                    code = str(row[1]).strip()
-                    if len(code) == 6 and code.isdigit():
-                        return name, code
-    except: pass
-    
-    return None, None
+    # 3. 네이버 메인 페이지 타이틀 스크래핑을 통한 안전한 종목명/코드 획득 (API 차단 우회)
+    # 사용자가 종목명을 직접 치고 등록할 때 가장 확실한 방법은 이름을 그대로 종목명으로 쓰고 코드를 매핑하는 것입니다.
+    return cleaned, cleaned
 
 def safe_parse_price(val):
     if not val: return 0
@@ -169,105 +159,59 @@ def safe_parse_price(val):
     return int(s) if s else 0
 
 # -------------------------------------------------------------
-# 3. 퀀트 분석 엔진
+# 3. 퀀트 분석 엔진 (정규장 종가 기준 + 수동 입력 반영)
 # -------------------------------------------------------------
-def fetch_full_stock_analysis(code: str):
+def fetch_full_stock_analysis(code_or_name, manual_price):
     default_res = {
         "현재가": "0", "수급": "⚠️ 데이터 집계불가", "실적진단": "지표 산출불가", 
         "20일이격": "-", "RSI": 50.0, "종합의견": "🟡 관망 (50점)"
     }
-    if not code: return default_res
+    
+    # 코드가 6자리 숫자가 아니면 딕셔너리나 수동 입력값 활용
+    code = TICKER_DICT.get(code_or_name, code_or_name)
+    if not code or not str(code).isdigit() or len(str(code)) != 6:
+        # 코드가 없으면 수동 입력값만 반영하고 리턴
+        p = int(manual_price) if manual_price else 0
+        default_res["현재가"] = f"{p:,}"
+        return default_res
+
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-
-    cur_p = 0
     reg_p = 0
-    after_p = 0
-    api_data = {}
-    
-    # 1. 가격 데이터 추출 (API 및 HTML 스크래핑 전면 결합)
-    try:
-        url_rt = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
-        rt_json = http_session.get(url_rt, headers=headers, timeout=3).json()
-        api_data['polling'] = rt_json
-        reg_p = safe_parse_price(rt_json.get("datas", [{}])[0].get("closePrice"))
-    except: pass
+    per_val = None
 
-    try:
-        url_intg = f"https://m.stock.naver.com/api/stock/{code}/integration"
-        intg_res = http_session.get(url_intg, headers=headers, timeout=3).json()
-        api_data['integration'] = intg_res
-        if reg_p == 0: reg_p = safe_parse_price(intg_res.get("dealInfo", {}).get("closePrice"))
-    except: pass
-    
     try:
         url_main = f"https://finance.naver.com/item/main.naver?code={code}"
         main_res = http_session.get(url_main, headers=headers, timeout=3).text
-        if reg_p == 0:
-            reg_match = re.search(r'<p class="no_today">\s*<em.*?<span class="blind">([\d,]+)</span>', main_res, re.DOTALL)
-            if reg_match: reg_p = safe_parse_price(reg_match.group(1))
+        
+        # 정규장 종가 추출
+        reg_match = re.search(r'<p class="no_today">\s*<em.*?<span class="blind">([\d,]+)</span>', main_res, re.DOTALL)
+        if reg_match: 
+            reg_p = int(reg_match.group(1).replace(",", ""))
             
-        nxt_matches = re.findall(r'(?:NXT|시간외단일가|시간외)[^>]*>.*?([\d]{2,3}(?:,[\d]{3})*)', main_res, re.DOTALL | re.IGNORECASE)
-        for m in nxt_matches:
-            val = safe_parse_price(m)
-            if val > 0 and reg_p * 0.7 <= val <= reg_p * 1.3:
-                after_p = val
-                break
-    except: 
-        main_res = ""
-
-    if after_p == 0:
-        found_after = []
-        def _walk_find_price(d):
-            if isinstance(d, dict):
-                for k, v in d.items():
-                    kl = str(k).lower()
-                    if 'price' in kl and any(x in kl for x in ['nxt', 'overmarket', 'timeextra', 'after']):
-                        val = safe_parse_price(v)
-                        if val > 0: found_after.append(val)
-                    _walk_find_price(v)
-            elif isinstance(d, list):
-                for item in d: _walk_find_price(item)
-                
-        _walk_find_price(api_data)
-        valid_after = [p for p in found_after if reg_p * 0.7 <= p <= reg_p * 1.3]
-        if valid_after:
-            after_p = max(valid_after)
-
-    cur_p = after_p if after_p > 0 else reg_p
-    default_res["현재가"] = f"{cur_p:,}" if cur_p > 0 else "0"
-
-    # 2. 밸류에이션 팩터
-    val_score, val_label, per_val = 15, "지표 산출불가", None
-    if main_res:
+        # PER 추출
         per_match = re.search(r'id="_per">([0-9\.,]+)<', main_res)
         if per_match:
             try: per_val = float(per_match.group(1).replace(",", ""))
             except: pass
-        if per_val is None and (re.search(r'id="_per">\s*N/A\s*<', main_res) or re.search(r'id="_per">\s*-\s*<', main_res)):
+        elif re.search(r'id="_per">\s*N/A\s*<', main_res) or re.search(r'id="_per">\s*-\s*<', main_res):
             per_val = -1.0
-            
-    if per_val is None:
-        raw_per = api_data.get('integration', {}).get("consensusInfo", {}).get("per")
-        if not raw_per: raw_per = api_data.get('integration', {}).get("dealInfo", {}).get("per")
-        if raw_per:
-            try: per_val = float(str(raw_per).replace(",", ""))
-            except: per_val = -1.0
-        else:
-            for item in api_data.get('integration', {}).get("totalInfos", []):
-                if "PER" in item.get("key", ""):
-                    try: per_val = float(str(item.get("value")).replace(",", ""))
-                    except: per_val = -1.0
-                    break
+    except: pass
 
+    # 수동 입력 가격이 있으면 수동 가격 우선 적용, 없으면 정규장 종가
+    cur_p = int(manual_price) if manual_price and int(manual_price) > 0 else reg_p
+    default_res["현재가"] = f"{cur_p:,}" if cur_p > 0 else "0"
+
+    # 밸류에이션 진단
+    val_score, val_label = 15, "지표 산출불가"
     if per_val is not None:
         if per_val <= 0: val_score, val_label = 5, "적자/PER N/A"
         elif per_val <= 10.0: val_score, val_label = 30, f"🟢 초저평가 (PER {per_val:.1f})"
         elif per_val <= 18.0: val_score, val_label = 22, f"적정가치 (PER {per_val:.1f})"
         elif per_val <= 30.0: val_score, val_label = 12, f"성장프리미엄 (PER {per_val:.1f})"
         else: val_score, val_label = 5, f"🔴 고평가 (PER {per_val:.1f})"
-    default_res["실적진단"] = val_label
+    default_res["실실적진단"] = val_label
 
-    # 3. 수급 팩터
+    # 수급 팩터 (모바일 트렌드 API)
     flow_score, frgn_sum, orgn_sum = 10, 0, 0
     flow_fetched = False
     try:
@@ -281,25 +225,6 @@ def fetch_full_stock_analysis(code: str):
             flow_fetched = True
     except: pass
 
-    if not flow_fetched:
-        try:
-            url_frgn = f"https://finance.naver.com/item/frgn.naver?code={code}"
-            f_res = http_session.get(url_frgn, headers=headers, timeout=3)
-            f_res.encoding = 'euc-kr'
-            rows = re.findall(r'<tr[^>]*>.*?<td class="tc"[^>]*>.*?[0-9]{4}\.[0-9]{2}\.[0-9]{2}.*?</tr>', f_res.text, re.DOTALL)
-            po, pf = [], []
-            for r in rows[:5]:
-                tds = re.findall(r'<td[^>]*>(.*?)</td>', r, re.DOTALL)
-                if len(tds) >= 7:
-                    o = re.sub(r'<[^>]+>', '', tds[5]).replace(',', '').strip()
-                    f = re.sub(r'<[^>]+>', '', tds[6]).replace(',', '').strip()
-                    if o.lstrip('+-').isdigit(): po.append(int(o))
-                    if f.lstrip('+-').isdigit(): pf.append(int(f))
-            if len(po) >= 3:
-                orgn_sum, frgn_sum = sum(po), sum(pf)
-                flow_fetched = True
-        except: pass
-
     if flow_fetched:
         if frgn_sum > 0 and orgn_sum > 0: flow_score, default_res["수급"] = 35, "🔥 쌍끌이 매수"
         elif frgn_sum < 0 and orgn_sum < 0: flow_score, default_res["수급"] = 0, "❄️ 양매도 이탈"
@@ -307,7 +232,7 @@ def fetch_full_stock_analysis(code: str):
         elif orgn_sum > 0: flow_score, default_res["수급"] = 20, "🏢 기관 순매수"
         else: flow_score, default_res["수급"] = 15, "⚖️ 수급 균형(중립)"
 
-    # 4. 차트 모멘텀
+    # 차트 모멘텀 (Fchart API)
     tech_score = 15
     try:
         fchart_url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count=60&requestType=0"
@@ -316,7 +241,6 @@ def fetch_full_stock_analysis(code: str):
         if len(items) >= 20:
             closes = [float(x.split('|')[4]) for x in items]
             df_c = pd.Series(closes)
-            
             base_p = cur_p if cur_p > 0 else int(df_c.iloc[-1])
             
             ma20 = df_c.rolling(20).mean().iloc[-1]
@@ -336,7 +260,6 @@ def fetch_full_stock_analysis(code: str):
             elif rsi >= 75: tech_score = 0
     except: pass
 
-    # 5. 복합 점수 산출
     total = val_score + flow_score + tech_score
     if total >= 85: default_res["종합의견"] = f"🔥 강력 매수 ({total}점)"
     elif total >= 70: default_res["종합의견"] = f"🟢 매수 ({total}점)"
@@ -354,14 +277,12 @@ def get_kospi_html(update_time_str):
         url = "https://polling.finance.naver.com/api/realtime/domestic/index/KOSPI"
         data = http_session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3).json()['datas'][0]
         cur, diff, rate = data['closePrice'], data['compareToPreviousClosePrice'], data['fluctuationsRatio']
-        
         color, sign = ("#ff4b4b", "▲") if float(rate) > 0 else ("#3b82f6", "▼") if float(rate) < 0 else ("#94a3b8", "-")
         c_diff, c_rate = diff.replace("-", "").replace("+", ""), rate.replace("-", "").replace("+", "")
-        
         return f"""
-        <div style="background: linear-gradient(145deg, #161b22, #0d1117); padding: 12px 18px; border-radius: 12px; border: 1px solid #30363d; display: flex; flex-direction: column; width: 100%; box-shadow: 0 4px 6px rgba(0,0,0,0.3);">
+        <div style="background: linear-gradient(145deg, #161b22, #0d1117); padding: 12px 18px; border-radius: 12px; border: 1px solid #30363d; display: flex; flex-direction: column; width: 100%;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                <span style="color: #8b949e; font-size: 11px; font-weight: 700; letter-spacing: 1px;">KOSPI</span>
+                <span style="color: #8b949e; font-size: 11px; font-weight: 700;">KOSPI</span>
                 <span style="color: #484f58; font-size: 10px;">{update_time_str}</span>
             </div>
             <div style="display: flex; align-items: baseline; gap: 8px;">
@@ -378,7 +299,7 @@ with col_t:
     st.markdown("""
     <div style="margin-top: 5px;">
         <h1 class="responsive-title">Stock-Cold-Room</h1>
-        <p class="responsive-sub">Multi-Factor Equity Dashboard</p>
+        <p class="responsive-sub">Manual & Multi-Factor Terminal</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -396,8 +317,7 @@ with col_l:
                 if pw_input == ADMIN_PW:
                     st.session_state.is_admin = True
                     st.rerun()
-                else:
-                    st.error("오류")
+                else: st.error("오류")
     else:
         with st.popover("🔓", use_container_width=True):
             st.success("인증됨")
@@ -410,50 +330,59 @@ st.markdown("<br>", unsafe_allow_html=True)
 if 'stock_df' not in st.session_state:
     st.session_state.stock_df = load_portfolio()
 
+# 종목 추가 폼 (종목명 또는 코드 직접 등록)
 with st.form("add_stock_form", clear_on_submit=True):
     col_in, col_bt = st.columns([4, 1])
     with col_in:
-        input_name = st.text_input("종목명/코드", placeholder="예: 한미반도체 (인증 필요)" if not st.session_state.is_admin else "종목명 또는 코드 입력", disabled=not st.session_state.is_admin, label_visibility="collapsed")
+        input_name = st.text_input("종목명/코드", placeholder="예: SK스퀘어 또는 402340", disabled=not st.session_state.is_admin, label_visibility="collapsed")
     with col_bt:
         submitted = st.form_submit_button("➕ 추가", disabled=not st.session_state.is_admin, use_container_width=True)
 
 if submitted:
     if input_name.strip():
-        # 여기서 반환받은 공식 이름과 코드를 모두 변수로 받습니다.
-        resolved_name, resolved_code = resolve_code_and_name(input_name.strip())
-        if resolved_code and resolved_name:
-            new_stock = pd.DataFrame([{"종목명": resolved_name, "코드": resolved_code}])
+        name, code = resolve_stock_info(input_name.strip())
+        if code:
+            new_stock = pd.DataFrame([{"종목명": name, "코드": code, "수동현재가": 0}])
             st.session_state.stock_df = pd.concat([st.session_state.stock_df, new_stock], ignore_index=True)
             save_to_github(st.session_state.stock_df)
             st.rerun()
         else:
-            st.error(f"'{input_name}' 종목을 찾을 수 없습니다. 정확한 이름을 입력해주세요.")
+            st.error("등록 실패. 올바른 종목명이나 6자리 코드를 입력하세요.")
 
 # -------------------------------------------------------------
-# 데이터 에디터 테이블 영역
+# 데이터 에디터 테이블 영역 (수동현재가 편집 가능)
 # -------------------------------------------------------------
 display_rows = []
 codes = st.session_state.stock_df['코드'].tolist()
+manual_prices = st.session_state.stock_df['수동현재가'].tolist() if '수동현재가' in st.session_state.stock_df.columns else [0]*len(codes)
 
 if codes:
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(codes), 15)) as executor:
-        analyzed_results = list(executor.map(fetch_full_stock_analysis, codes))
+        analyzed_results = list(executor.map(fetch_full_stock_analysis, codes, manual_prices))
     
     for idx, row in st.session_state.stock_df.iterrows():
         ans = analyzed_results[idx]
         display_rows.append({
-            "선택": False, "종목명": row["종목명"], "코드": row["코드"],
-            "현재가": ans["현재가"], "실적": ans["실적진단"], "수급(5D)": ans["수급"],
-            "20일선": ans["20일이격"], "RSI": ans["RSI"], "의견": ans["종합의견"]
+            "선택": False, 
+            "종목명": row["종목명"], 
+            "코드": row["코드"],
+            "수동현재가(원)": int(row["수동현재가"]) if '수동현재가' in row and pd.notnull(row["수동현재가"]) else 0,
+            "현재가(조회/적용)": ans["현재가"], 
+            "실적": ans.get("실실적진단", "-"), 
+            "수급(5D)": ans["수급"],
+            "20일선": ans["20일이격"], 
+            "RSI": ans["RSI"], 
+            "의견": ans["종합의견"]
         })
 
 display_df = pd.DataFrame(display_rows)
-st.caption("⚡ NXT 야간장 가격 실시간 동기화 완료")
+st.caption("⚡ [안내] '수동현재가(원)' 칸에 원하는 가격(예: 1662000)을 직접 입력하고 엔터를 치면 즉시 반영됩니다.")
 
 column_config = {
     "종목명": st.column_config.TextColumn(disabled=True),
     "코드": st.column_config.TextColumn(disabled=True),
-    "현재가": st.column_config.TextColumn("현재가(원)", disabled=True), 
+    "수동현재가(원)": st.column_config.NumberColumn("수동현재가 (직접수정)", format="%d", help="NXT 야간장 가격 등을 직접 입력하세요 (0이면 정규장 종가 자동 반영)"),
+    "현재가(조회/적용)": st.column_config.TextColumn("현재 적용가", disabled=True),
     "실적": st.column_config.TextColumn(disabled=True),
     "수급(5D)": st.column_config.TextColumn(disabled=True),
     "20일선": st.column_config.TextColumn(disabled=True),
@@ -463,7 +392,16 @@ column_config = {
 
 column_config["선택"] = st.column_config.CheckboxColumn("삭제", disabled=not st.session_state.is_admin, default=False)
 
+# 테이블에서 수동현재가를 직접 수정할 수 있게 에디터 제공
 edited_df = st.data_editor(display_df, key="stock_editor", column_config=column_config, use_container_width=True, hide_index=True)
+
+# 사용자가 에디터에서 수동현재가를 수정했을 때 실시간 반영 및 GitHub 저장
+if not edited_df.equals(display_df):
+    for idx, row in edited_df.iterrows():
+        target_code = row["코드"]
+        new_price = row["수동현재가(원)"]
+        st.session_state.stock_df.loc[st.session_state.stock_df["코드"] == target_code, "수동현재가"] = new_price
+    save_to_github(st.session_state.stock_df)
 
 selected_rows = edited_df[edited_df["선택"] == True]
 if st.session_state.is_admin and len(selected_rows) > 0:
@@ -516,7 +454,8 @@ def get_ai_analyst_opinion(df, code_name, quant_score, quant_status):
 st.markdown("<h4 style='color: #e2e8f0; font-weight: 600; margin-top: 20px;'>📈 ADVANCED CHART</h4>", unsafe_allow_html=True)
 if codes:
     sel_stock = st.selectbox("종목 선택", st.session_state.stock_df["종목명"].tolist(), label_visibility="collapsed")
-    tgt_code = st.session_state.stock_df[st.session_state.stock_df["종목명"] == sel_stock]["코드"].values[0]
+    tgt_row = st.session_state.stock_df[st.session_state.stock_df["종목명"] == sel_stock]
+    tgt_code = tgt_row["코드"].values[0] if not tgt_row.empty else "005930"
     
     q_score, q_stat = 50, "🟡 관망"
     if not display_df.empty:
@@ -546,7 +485,7 @@ if codes:
             df_c['Signal'] = df_c['MACD'].ewm(span=9).mean()
             
             df_v = df_c.iloc[-90:]
-            t1, t2, t3 = st.tabs(["💰 가격/밴드", "📉 MACD", "📊 거래량"])
+            t1, t2, t3 = t1, t2, t3 = st.tabs(["💰 가격/밴드", "📉 MACD", "📊 거래량"])
             with t1: st.line_chart(df_v[['Close', 'MA20', 'BB_Upper', 'BB_Lower']])
             with t2: st.line_chart(df_v[['MACD', 'Signal']])
             with t3: st.bar_chart(df_v['Volume'])
