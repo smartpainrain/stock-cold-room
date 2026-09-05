@@ -420,7 +420,15 @@ column_config = {
 
 column_config["선택"] = st.column_config.CheckboxColumn("삭제", disabled=False, default=False)
 
-edited_df = st.data_editor(display_df, key="stock_editor", column_config=column_config, use_container_width=True, hide_index=True)
+# on_change=st.rerun을 통해 체크박스나 셀 수정 시 즉시 반영되도록 수정
+edited_df = st.data_editor(
+    display_df, 
+    key="stock_editor", 
+    column_config=column_config, 
+    use_container_width=True, 
+    hide_index=True,
+    on_change=lambda: None
+)
 
 # 현재가 수정 즉시 저장
 if not edited_df.equals(display_df):
@@ -432,15 +440,17 @@ if not edited_df.equals(display_df):
     st.rerun()
 
 # -------------------------------------------------------------
-# 삭제 버튼 즉시 노출 로직 (관리자 로그인 시 체크박스 선택 즉시 생성)
+# 삭제 버튼 영역 (관리자 로그인 시 항상 노출, 체크된 항목이 있을 때만 활성화)
 # -------------------------------------------------------------
 selected_rows = edited_df[edited_df["선택"] == True]
 
-if st.session_state.is_admin and len(selected_rows) > 0:
+if st.session_state.is_admin:
     st.markdown("<br>", unsafe_allow_html=True)
     col_del_btn, _ = st.columns([2, 5])
     with col_del_btn:
-        if st.button(f"🗑️ 선택한 종목 삭제 ({len(selected_rows)}개)", use_container_width=True, type="primary"):
+        delete_disabled = (len(selected_rows) == 0)
+        btn_label = f"🗑️ 선택한 종목 삭제 ({len(selected_rows)}개)" if len(selected_rows) > 0 else "🗑️ 삭제할 종목을 체크하세요"
+        if st.button(btn_label, use_container_width=True, type="primary", disabled=delete_disabled):
             codes_to_remove = selected_rows["코드"].tolist()
             st.session_state.stock_df = st.session_state.stock_df[~st.session_state.stock_df["코드"].isin(codes_to_remove)].reset_index(drop=True)
             save_to_github(st.session_state.stock_df)
