@@ -11,7 +11,6 @@ import concurrent.futures
 
 DATA_FILE = "portfolio.json"
 
-# 모바일 대응을 위해 레이아웃 최적화
 st.set_page_config(page_title="Stock Cold-Room", layout="wide", initial_sidebar_state="collapsed")
 
 # =====================================================================
@@ -28,7 +27,6 @@ st.markdown("""
     footer {visibility: hidden;}
     [data-testid="stToolbar"] {visibility: hidden;}
     
-    /* 모바일 반응형 폰트 및 여백 */
     .responsive-title {
         font-family: 'Helvetica Neue', Arial, sans-serif; 
         font-weight: 900; 
@@ -41,7 +39,6 @@ st.markdown("""
         color: #64748b; margin: 4px 0 0 0; text-transform: uppercase; letter-spacing: 1px;
     }
     
-    /* 팝오버 및 폼 디자인 */
     [data-testid="stForm"] {
         border: 1px solid #1e293b; border-radius: 12px; background-color: #0f172a;
     }
@@ -51,7 +48,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 글로벌 HTTP 세션 (연결 재사용으로 API 통신 속도 극대화)
 http_session = requests.Session()
 
 # -------------------------------------------------------------
@@ -133,7 +129,7 @@ def save_to_github(df):
     return False
 
 # -------------------------------------------------------------
-# 2. 초고속 퀀트 분석 엔진 (yfinance 제거 -> 네이버 Fchart 직결)
+# 2. 퀀트 분석 엔진 (NXT 야간장 반영 & 실적 파싱 완벽 복구)
 # -------------------------------------------------------------
 TICKER_DICT = {
     "삼성전자": "005930", "sk하이닉스": "000660", "한화에어로스페이스": "012450", 
@@ -156,45 +152,106 @@ def resolve_code(name_or_code):
 
 def fetch_full_stock_analysis(code: str):
     default_res = {
-        "현재가": 0, "수급": "⚠️ 데이터 집계불가", "실적진단": "-", 
+        "현재가": 0, "수급": "⚠️ 데이터 집계불가", "실적진단": "지표 산출불가", 
         "20일이격": "-", "RSI": 50.0, "종합의견": "🟡 관망 (50점)"
     }
     if not code: return default_res
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
 
-    # 1. 가격 및 밸류에이션 파싱
-    cur_p, per_val = 0, None
-    val_score, val_label = 15, "적자/PER N/A"
+    # 1. NXT 장외체결가 및 실시간 체결가 다중 추적
+    cur_p = 0
+    # 1-1. polling API 실시간 응답 (NXT/시간외 필드 우선 추출)
     try:
-        url_intg = f"https://m.stock.naver.com/api/stock/{code}/integration"
-        intg_res = http_session.get(url_intg, headers=headers, timeout=3).json()
-        
-        deal = intg_res.get("dealInfo", {})
-        cur_p = int(str(deal.get("overMarketPrice") or deal.get("nxtPrice") or deal.get("closePrice") or "0").replace(",", ""))
-        
-        cons = intg_res.get("consensusInfo", {})
-        raw_per = cons.get("per")
-        if raw_per:
-            try: per_val = float(str(raw_per).replace(",", ""))
-            except: per_val = -1.0
-        if per_val is None:
-            for item in intg_res.get("totalInfos", []):
-                if "PER" in item.get("key", ""):
-                    try: per_val = float(str(item.get("value")).replace(",", ""))
-                    except: per_val = -1.0
-                    break
-
-        if per_val is not None:
-            if per_val <= 0: val_score, val_label = 5, "적자/PER N/A"
-            elif per_val <= 10.0: val_score, val_label = 30, f"🟢 초저평가 (PER {per_val:.1f})"
-            elif per_val <= 18.0: val_score, val_label = 22, f"적정가치 (PER {per_val:.1f})"
-            elif per_val <= 30.0: val_score, val_label = 12, f"성장프리미엄 (PER {per_val:.1f})"
-            else: val_score, val_label = 5, f"🔴 고평가 (PER {per_val:.1f})"
-        default_res["현재가"] = cur_p
-        default_res["실적진단"] = val_label
+        url_rt = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
+        rt_json = http_session.get(url_rt, headers=headers, timeout=3).json()
+        if "datas" in rt_json and rt_json["datas"]:
+            d0 = rt_json["datas"][0]
+            # overMarketPriceInfo 객체 또는 overMarketPrice 필드 우선 확인
+            over_p = d0.get("overMarketPrice") or d0.get("nxtPrice")
+            if not over_p and isinstance(d0.get("overMarketPriceInfo"), dict):
+                over_p = d0["overMarketPriceInfo"].get("overMarketPrice") or d0["overMarketPriceInfo"].get("closePrice")
+            if over_p:
+                cur_p = int(str(over_p).replace(",", ""))
+            elif d0.get("closePrice"):
+                cur_p = int(str(d0["closePrice"]).replace(",", ""))
     except: pass
 
-    # 2. 수급 (모바일 트렌드 API 우선, 실패시 웹 파싱)
+    # 1-2. 모바일 통합 API (NXT 2차 보완)
+    if cur_p == 0:
+        try:
+            url_intg = f"https://m.stock.naver.com/api/stock/{code}/integration"
+            intg_res = http_session.get(url_intg, headers=headers, timeout=3).json()
+            deal = intg_res.get("dealInfo", {})
+            nxt_p = deal.get("overMarketPrice") or deal.get("nxtPrice")
+            if nxt_p:
+                cur_p = int(str(nxt_p).replace(",", ""))
+            elif deal.get("closePrice"):
+                cur_p = int(str(deal.get("closePrice")).replace(",", ""))
+        except: pass
+
+    default_res["현재가"] = cur_p
+
+    # 2. 밸류에이션 팩터 (네이버 공식 페이지 직접 파싱으로 정상 복구)
+    val_score = 15
+    val_label = "지표 산출불가"
+    per_val = None
+
+    try:
+        url_main = f"https://finance.naver.com/item/main.naver?code={code}"
+        main_res = http_session.get(url_main, headers=headers, timeout=3).text
+        
+        # 1순위: 메인 페이지의 _per 요소 직접 추출
+        per_match = re.search(r'id="_per">([0-9\.,]+)<', main_res)
+        if per_match:
+            try:
+                per_val = float(per_match.group(1).replace(",", ""))
+            except: pass
+            
+        # 2순위: N/A 또는 적자 표기인지 확인
+        if per_val is None:
+            if re.search(r'id="_per">\s*N/A\s*<', main_res) or re.search(r'id="_per">\s*-\s*<', main_res):
+                per_val = -1.0
+                
+        # 3순위: 모바일 integration API 보조 탐색
+        if per_val is None:
+            url_intg = f"https://m.stock.naver.com/api/stock/{code}/integration"
+            intg_res = http_session.get(url_intg, headers=headers, timeout=3).json()
+            raw_per = intg_res.get("consensusInfo", {}).get("per") or intg_res.get("dealInfo", {}).get("per")
+            if raw_per:
+                try:
+                    per_val = float(str(raw_per).replace(",", ""))
+                except:
+                    per_val = -1.0
+            else:
+                for item in intg_res.get("totalInfos", []):
+                    if "PER" in item.get("key", ""):
+                        try:
+                            per_val = float(str(item.get("value")).replace(",", ""))
+                        except:
+                            per_val = -1.0
+                        break
+
+        if per_val is not None:
+            if per_val <= 0:
+                val_score = 5
+                val_label = "적자/PER N/A"
+            elif per_val <= 10.0:
+                val_score = 30
+                val_label = f"🟢 초저평가 (PER {per_val:.1f})"
+            elif per_val <= 18.0:
+                val_score = 22
+                val_label = f"적정가치 (PER {per_val:.1f})"
+            elif per_val <= 30.0:
+                val_score = 12
+                val_label = f"성장프리미엄 (PER {per_val:.1f})"
+            else:
+                val_score = 5
+                val_label = f"🔴 고평가부담 (PER {per_val:.1f})"
+        default_res["실적진단"] = val_label
+    except:
+        default_res["실적진단"] = "지표 산출불가"
+
+    # 3. 수급 팩터 (최근 5일 외인/기관)
     flow_score, frgn_sum, orgn_sum = 10, 0, 0
     flow_fetched = False
     try:
@@ -234,7 +291,7 @@ def fetch_full_stock_analysis(code: str):
         elif orgn_sum > 0: flow_score, default_res["수급"] = 20, "🏢 기관 순매수"
         else: flow_score, default_res["수급"] = 15, "⚖️ 수급 균형(중립)"
 
-    # 3. 차트 모멘텀 (yfinance 완전 대체 -> 네이버 Fchart XML 초고속 로드)
+    # 4. 차트 모멘텀
     tech_score = 15
     try:
         fchart_url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count=60&requestType=0"
@@ -245,7 +302,9 @@ def fetch_full_stock_analysis(code: str):
             df_c = pd.Series(closes)
             
             last_close = df_c.iloc[-1]
-            if cur_p == 0: cur_p = int(last_close); default_res["현재가"] = cur_p
+            if cur_p == 0:
+                cur_p = int(last_close)
+                default_res["현재가"] = cur_p
             
             ma20 = df_c.rolling(20).mean().iloc[-1]
             disp20 = (cur_p / ma20) * 100
@@ -264,7 +323,7 @@ def fetch_full_stock_analysis(code: str):
             elif rsi >= 75: tech_score = 0
     except: pass
 
-    # 4. 복합 스코어링
+    # 5. 복합 점수 산출
     total = val_score + flow_score + tech_score
     if total >= 85: default_res["종합의견"] = f"🔥 강력 매수 ({total}점)"
     elif total >= 70: default_res["종합의견"] = f"🟢 매수 ({total}점)"
@@ -274,7 +333,7 @@ def fetch_full_stock_analysis(code: str):
     return default_res
 
 # -------------------------------------------------------------
-# 3. 모바일 최적화 헤더 및 스텔스 로그인 팝오버
+# 3. 화면 렌더링
 # -------------------------------------------------------------
 @st.cache_data(ttl=15)
 def get_kospi_html(update_time_str):
@@ -300,7 +359,6 @@ def get_kospi_html(update_time_str):
         """
     except: return "<div style='color: gray;'>KOSPI 통신 지연</div>"
 
-# 헤더 레이아웃 (타이틀 6 : KOSPI 3 : 로그인 1 비율)
 col_t, col_k, col_l = st.columns([6, 3, 1], gap="small")
 
 with col_t:
@@ -317,7 +375,6 @@ with col_k:
 
 with col_l:
     st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
-    # 스텔스 팝오버 로그인 (모바일 화면 공간 차지 X)
     if not st.session_state.is_admin:
         with st.popover("🔐", use_container_width=True):
             st.markdown("**관리자 인증**")
@@ -337,9 +394,6 @@ with col_l:
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# -------------------------------------------------------------
-# 데이터 로드 및 폼
-# -------------------------------------------------------------
 if 'stock_df' not in st.session_state:
     st.session_state.stock_df = load_portfolio()
 
@@ -358,9 +412,7 @@ with st.form("add_stock_form", clear_on_submit=True):
                 save_to_github(st.session_state.stock_df)
                 st.rerun()
 
-# -------------------------------------------------------------
-# 초고속 병렬 처리 테이블 로드
-# -------------------------------------------------------------
+# 멀티스레딩 병렬 처리
 display_rows = []
 codes = st.session_state.stock_df['코드'].tolist()
 
@@ -377,7 +429,7 @@ if codes:
         })
 
 display_df = pd.DataFrame(display_rows)
-st.caption("⚡ 퀀트 팩터 엔진 가동 중 (초고속 차트망 직결)")
+st.caption("⚡ 퀀트 팩터 엔진 가동 중 (NXT 야간장 및 공식 실적 동기화)")
 
 column_config = {
     "종목명": st.column_config.TextColumn(disabled=True),
@@ -404,7 +456,7 @@ if st.session_state.is_admin and len(selected_rows) > 0:
         st.rerun()
 
 # -------------------------------------------------------------
-# 4. 차트 터미널 및 퀀트 융합 AI 브리핑 (네이버 Fchart 최적화)
+# 4. 차트 터미널 및 퀀트 융합 AI 브리핑
 # -------------------------------------------------------------
 def get_ai_analyst_opinion(df, code_name, quant_score, quant_status):
     if df.empty or len(df) < 60: return ""
@@ -455,7 +507,6 @@ if codes:
         q_stat = op_str.split('(')[0].strip()
     
     try:
-        # 네이버 Fchart 다이렉트 180일선 추출
         f_xml = http_session.get(f"https://fchart.stock.naver.com/sise.nhn?symbol={tgt_code}&timeframe=day&count=180&requestType=0", headers={"User-Agent": "Mozilla"}, timeout=3).text
         items = re.findall(r'<item data="(.*?)"', f_xml)
         
