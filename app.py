@@ -8,6 +8,7 @@ import json
 import base64
 import os
 import re
+import concurrent.futures
 
 DATA_FILE = "portfolio.json"
 
@@ -109,7 +110,7 @@ def save_to_github(df):
         return False
 
 # -------------------------------------------------------------
-# 2. 퀀트 멀티 팩터 분석 엔진
+# 2. 퀀트 멀티 팩터 분석 엔진 (초고속 병렬 처리 최적화)
 # -------------------------------------------------------------
 TICKER_DICT = {
     "삼성전자": "005930", "sk하이닉스": "000660", "한화에어로스페이스": "012450", 
@@ -145,7 +146,7 @@ def fetch_full_stock_analysis(code: str):
         return default_res
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"
     }
 
     # 1. NXT 및 실시간 가격 탐색
@@ -177,33 +178,48 @@ def fetch_full_stock_analysis(code: str):
             
     default_res["현재가"] = cur_p
 
-    # 2. 밸류에이션 팩터 (PER / EPS)
+    # 2. 밸류에이션 팩터 (PER / EPS - 적자기업(SK이노베이션 등) 예외 완벽 처리)
     val_score = 15
-    val_label = "보통"
+    val_label = "적자/PER N/A"
     per_val = None
 
     try:
         url_basic = f"https://finance.naver.com/item/main.naver?code={code}"
         basic_res = requests.get(url_basic, headers=headers, timeout=3).text
         
-        per_match = re.search(r'id="_per">([0-9\.,]+)<', basic_res)
+        # 음수(-) 또는 공백까지 모두 캡처하도록 정규식 개선
+        per_match = re.search(r'id="_per">([^<]+)<', basic_res)
         if per_match:
-            per_val = float(per_match.group(1).replace(",", ""))
-            
+            raw_per = per_match.group(1).replace(",", "").strip()
+            if raw_per and raw_per != '-':
+                try:
+                    per_val = float(raw_per)
+                except ValueError:
+                    per_val = -1.0 # 숫자가 아니면 적자/N/A 처리
+            else:
+                per_val = -1.0
+                
         if per_val is None and 'intg_res' in locals():
             consensus = intg_res.get("consensusInfo", {})
             raw_per = consensus.get("per")
             if raw_per:
-                per_val = float(str(raw_per).replace(",", ""))
-            for item in intg_res.get("totalInfos", []):
-                if "PER" in item.get("key", ""):
-                    per_val = float(str(item.get("value")).replace(",", ""))
-                    break
+                try:
+                    per_val = float(str(raw_per).replace(",", ""))
+                except ValueError:
+                    per_val = -1.0
+            if per_val is None:
+                for item in intg_res.get("totalInfos", []):
+                    if "PER" in item.get("key", ""):
+                        try:
+                            per_val = float(str(item.get("value")).replace(",", ""))
+                        except ValueError:
+                            per_val = -1.0
+                        break
 
         if per_val is not None:
             if per_val <= 0:
                 val_score = 5
-                val_label = f"적자기업 (PER {per_val:.1f})"
+                val_label = "적자/PER N/A"
             elif per_val <= 10.0:
                 val_score = 30
                 val_label = f"🟢 초저평가 (PER {per_val:.1f})"
@@ -217,11 +233,12 @@ def fetch_full_stock_analysis(code: str):
                 val_score = 5
                 val_label = f"🔴 고평가부담 (PER {per_val:.1f})"
         else:
-            val_label = "PER 산출불가"
+            val_score = 5
+            val_label = "적자/PER N/A"
             
         default_res["실적진단"] = val_label
     except Exception:
-        default_res["실적진단"] = "지표 산출불가"
+        default_res["실적진단"] = "적자/PER N/A"
 
     # 3. 수급 팩터 (네이버 공식 매매동향 직접 파싱)
     flow_score = 10
@@ -354,7 +371,7 @@ def fetch_full_stock_analysis(code: str):
     return default_res
 
 # -------------------------------------------------------------
-# 3. 화면 렌더링
+# 3. 화면 렌더링 (병렬 처리 적용)
 # -------------------------------------------------------------
 st.markdown("### 📡 Stock Cold-Room", unsafe_allow_html=True)
 
@@ -429,11 +446,21 @@ with st.form("add_stock_form", clear_on_submit=True):
                 save_to_github(st.session_state.stock_df)
                 st.rerun()
 
-# 테이블 데이터 구성
+# -------------------------------------------------------------
+# 초고속 멀티스레딩(병렬 처리) 데이터 수집
+# -------------------------------------------------------------
 display_rows = []
+codes = st.session_state.stock_df['코드'].tolist()
+analyzed_results = []
+
+if codes:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(codes), 15)) as executor:
+        # 모든 종목의 API 요청을 동시에 병렬로 실행
+        analyzed_results = list(executor.map(fetch_full_stock_analysis, codes))
+
 for idx, row in st.session_state.stock_df.iterrows():
     code = str(row['코드'])
-    analyzed = fetch_full_stock_analysis(code)
+    analyzed = analyzed_results[idx]
 
     display_rows.append({
         "선택": False,
@@ -451,7 +478,7 @@ display_df = pd.DataFrame(display_rows)
 
 last_sync = st.session_state.get("last_sync_time")
 sync_label = f" | 💾 GitHub 동기화 완료: {last_sync}" if last_sync else ""
-st.caption(f"⚡ 멀티 팩터 분석{sync_label}")
+st.caption(f"⚡ 병렬 처리 최적화 완료{sync_label}")
 
 # 통합 데이터 테이블 (관리자 미인증 시 체크박스 컬럼 비활성화)
 column_config = {
