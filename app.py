@@ -178,7 +178,7 @@ def parse_price_to_int(val):
     return int(s) if s else 0
 
 # -------------------------------------------------------------
-# 3. 퀀트 분석 엔진
+# 3. 퀀트 분석 엔진 (PER, PBR, ROE 복합 진단 적용)
 # -------------------------------------------------------------
 def fetch_full_stock_analysis(code_or_name, manual_price):
     default_res = {
@@ -196,7 +196,7 @@ def fetch_full_stock_analysis(code_or_name, manual_price):
 
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     reg_p = 0
-    per_val = None
+    per_val, pbr_val, roe_val = None, None, None
 
     try:
         url_main = f"https://finance.naver.com/item/main.naver?code={code}"
@@ -206,26 +206,68 @@ def fetch_full_stock_analysis(code_or_name, manual_price):
         if reg_match: 
             reg_p = int(reg_match.group(1).replace(",", ""))
             
+        # PER 파싱
         per_match = re.search(r'id="_per">([0-9\.,]+)<', main_res)
         if per_match:
             try: per_val = float(per_match.group(1).replace(",", ""))
             except: pass
-        elif re.search(r'id="_per">\s*N/A\s*<', main_res) or re.search(r'id="_per">\s*-\s*<', main_res):
-            per_val = -1.0
+            
+        # PBR 파싱
+        pbr_match = re.search(r'id="_pbr">([0-9\.,]+)<', main_res)
+        if pbr_match:
+            try: pbr_val = float(pbr_match.group(1).replace(",", ""))
+            except: pass
+            
+        # ROE 파싱 (모바일 API 또는 메인 텍스트에서 탐색)
+        url_intg = f"https://m.stock.naver.com/api/stock/{code}/integration"
+        intg_res = http_session.get(url_intg, headers=headers, timeout=3).json()
+        
+        consensus = intg_res.get("consensusInfo", {})
+        if not per_val:
+            try: per_val = float(str(consensus.get("per", "")).replace(",", ""))
+            except: pass
+        if not pbr_val:
+            try: pbr_val = float(str(consensus.get("pbr", "")).replace(",", ""))
+            except: pass
+        
+        roe_raw = consensus.get("roe")
+        if roe_raw:
+            try: roe_val = float(str(roe_raw).replace(",", ""))
+            except: pass
+        else:
+            # HTML 내 ROE 텍스트 탐색
+            roe_match = re.search(r'ROE.*?([0-9\.,-]+)', main_res, re.IGNORECASE)
+            if roe_match:
+                try: roe_val = float(roe_match.group(1).replace(",", ""))
+                except: pass
     except: pass
 
     default_res["정규장현재가"] = f"{reg_p:,}" if reg_p > 0 else "0"
     eval_p = m_p if m_p > 0 else reg_p
     default_res["eval_price"] = eval_p
 
+    # 복합 밸류에이션(PER, PBR, ROE) 스코어 산출
     val_score = 15
     val_label = "지표 산출불가"
-    if per_val is not None:
-        if per_val <= 0: val_score, val_label = 5, "적자/PER N/A"
-        elif per_val <= 10.0: val_score, val_label = 30, f"🟢 초저평가 (PER {per_val:.1f})"
-        elif per_val <= 18.0: val_score, val_label = 22, f"적정가치 (PER {per_val:.1f})"
-        elif per_val <= 30.0: val_score, val_label = 12, f"성장프리미엄 (PER {per_val:.1f})"
-        else: val_score, val_label = 5, f"🔴 고평가 (PER {per_val:.1f})"
+    
+    if per_val is not None or pbr_val is not None:
+        p_val_str = f"PER {per_val:.1f}" if per_val else "PER N/A"
+        b_val_str = f"PBR {pbr_val:.2f}" if pbr_val else "PBR N/A"
+        r_val_str = f"ROE {roe_val:.1f}%" if roe_val is not None else ""
+        
+        # 저평가 및 우수 수익성 판정
+        if per_val and per_val > 0 and per_val <= 12 and pbr_val and pbr_val <= 1.2:
+            val_score, val_label = 30, f"🟢 저평가 ({p_val_str}, {b_val_str})"
+        elif roe_val and roe_val >= 12:
+            val_score, val_label = 25, f"📈 고ROE 우수 ({r_val_str}, {b_val_str})"
+        elif per_val and per_val > 30:
+            val_score, val_label = 5, f"🔴 고평가 ({p_val_str})"
+        else:
+            val_score, val_label = 20, f"적정가치 ({p_val_str}, {b_val_str})"
+    else:
+        val_label = "적자/지표 N/A"
+        val_score = 5
+
     default_res["실적진단"] = val_label
 
     flow_score = 10
@@ -322,7 +364,7 @@ with col_t:
     st.markdown("""
     <div style="margin-top: 5px;">
         <h1 class="responsive-title">Stock-Cold-Room</h1>
-        <p class="responsive-sub">Manual & Multi-Factor Terminal</p>
+        <p class="responsive-sub">Multi-Factor (PER/PBR/ROE) Terminal</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -372,7 +414,7 @@ if submitted:
             st.error("등록 실패. 올바른 종목명이나 6자리 코드를 입력하세요.")
 
 # -------------------------------------------------------------
-# 데이터 에디터 테이블 영역 (체크박스 제거 버전)
+# 데이터 에디터 테이블 영역
 # -------------------------------------------------------------
 display_rows = []
 codes = st.session_state.stock_df['코드'].tolist()
@@ -392,7 +434,7 @@ if codes:
             "코드": row["코드"],
             "현재가": formatted_m_p,  
             "현재가(정규장)": ans["정규장현재가"], 
-            "실적": ans["실적진단"], 
+            "실적(PER/PBR/ROE)": ans["실적진단"], 
             "수급(5D)": ans["수급"],
             "20일선": ans["20일이격"], 
             "RSI": ans["RSI"], 
@@ -408,7 +450,7 @@ column_config = {
     "코드": st.column_config.TextColumn("코드", disabled=True),
     "현재가": st.column_config.TextColumn("현재가", help="야간장 가격 등을 직접 입력하세요 (0이면 정규장 종가 자동 반영)"),
     "현재가(정규장)": st.column_config.TextColumn("현재가(정규장)", disabled=True),
-    "실적": st.column_config.TextColumn("실적", disabled=True),
+    "실적(PER/PBR/ROE)": st.column_config.TextColumn("실적(PER/PBR/ROE)", disabled=True),
     "수급(5D)": st.column_config.TextColumn("수급(5D)", disabled=True),
     "20일선": st.column_config.TextColumn("20일선", disabled=True),
     "RSI": st.column_config.NumberColumn("RSI", disabled=True),
@@ -418,7 +460,6 @@ column_config = {
 
 edited_df = st.data_editor(display_df, key="stock_editor", column_config=column_config, use_container_width=True, hide_index=True)
 
-# 현재가 수정 즉시 저장
 if not edited_df.equals(display_df):
     for idx, row in edited_df.iterrows():
         target_code = row["코드"]
