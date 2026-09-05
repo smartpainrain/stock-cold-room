@@ -11,12 +11,24 @@ import os
 DATA_FILE = "portfolio.json"
 
 # -------------------------------------------------------------
-# GitHub API 연동 함수 (실패 원인 화면 출력)
+# GitHub API 연동 함수 (Secrets 하위 섹션 방어 로직 적용)
 # -------------------------------------------------------------
 def get_github_config():
+    token = None
+    repo = None
     try:
-        token = st.secrets["GITHUB_TOKEN"].strip()
-        repo = st.secrets["GITHUB_REPO"].strip()
+        # 1. 최상단 키 조회 시도
+        if "GITHUB_TOKEN" in st.secrets:
+            token = str(st.secrets["GITHUB_TOKEN"]).strip()
+        # 2. mysql 등 하위 섹션에 잘못 묶였을 경우 대비
+        elif "mysql" in st.secrets and "GITHUB_TOKEN" in st.secrets["mysql"]:
+            token = str(st.secrets["mysql"]["GITHUB_TOKEN"]).strip()
+
+        if "GITHUB_REPO" in st.secrets:
+            repo = str(st.secrets["GITHUB_REPO"]).strip()
+        elif "mysql" in st.secrets and "GITHUB_REPO" in st.secrets["mysql"]:
+            repo = str(st.secrets["mysql"]["GITHUB_REPO"]).strip()
+            
         return token, repo
     except Exception:
         return None, None
@@ -39,7 +51,7 @@ def load_portfolio():
                 parsed_json = json.loads(decoded_content)
                 if parsed_json:
                     return pd.DataFrame(parsed_json)
-            else:
+            elif res.status_code != 404:
                 st.error(f"🚨 GitHub 파일 불러오기 실패 (HTTP {res.status_code}): {res.text}")
         except Exception as e:
             st.error(f"🚨 GitHub API 연결 실패: {e}")
@@ -54,8 +66,8 @@ def load_portfolio():
         except Exception:
             pass
 
-    # 3. GitHub 연결 실패 시 빈 데이터프레임 반환 (기본값으로 되살아나는 현상 원천 차단)
-    st.warning("⚠️ GitHub에 저장된 종목 데이터를 가져오지 못했습니다. Secrets 설정과 portfolio.json 파일을 확인하세요.")
+    # 3. GitHub 연결 실패 시 빈 데이터프레임 반환 (기존 하드코딩 종목 부활 방지)
+    st.warning("⚠️ GitHub에 저장된 종목 데이터를 가져오지 못했습니다. Secrets 설정과 portfolio.json을 확인하세요.")
     return pd.DataFrame(columns=["종목명", "코드", "매수가"])
 
 def save_to_github(df):
@@ -148,7 +160,7 @@ with col_h2:
 st.divider()
 
 # -------------------------------------------------------------
-# 2. 종목 자동 매칭 로직
+# 2. 종목 자동 매칭 로직 (사전 + 네이버 금융 자동 검색)
 # -------------------------------------------------------------
 TICKER_DICT = {
     "삼성전자": "005930",
@@ -288,7 +300,7 @@ with st.form("add_stock_form", clear_on_submit=True):
             st.rerun()
 
 # -------------------------------------------------------------
-# 5. 데이터 에디터
+# 5. 데이터 에디터 (매수가 수정 감지 및 즉시 동기화)
 # -------------------------------------------------------------
 if "stock_editor" in st.session_state and "edited_rows" in st.session_state["stock_editor"]:
     edited_rows = st.session_state["stock_editor"]["edited_rows"]
