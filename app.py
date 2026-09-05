@@ -104,7 +104,7 @@ def save_to_github(df):
         return False
 
 # -------------------------------------------------------------
-# 2. 퀀트 멀티 팩터 분석 엔진 (NXT 시세 및 지표 파싱)
+# 2. 퀀트 멀티 팩터 분석 엔진 (수급 상태 분리 및 정밀 진단)
 # -------------------------------------------------------------
 TICKER_DICT = {
     "삼성전자": "005930", "sk하이닉스": "000660", "한화에어로스페이스": "012450", 
@@ -133,7 +133,7 @@ def resolve_code(name_or_code):
 @st.cache_data(ttl=30)
 def fetch_full_stock_analysis(code: str):
     default_res = {
-        "현재가": 0, "수급": "관망", "실적진단": "-", 
+        "현재가": 0, "수급": "⚠️ 통신 지연", "실적진단": "-", 
         "20일이격": "-", "RSI": 50.0, "종합의견": "🟡 관망 (50점)"
     }
     if not code:
@@ -218,33 +218,57 @@ def fetch_full_stock_analysis(code: str):
     except Exception:
         default_res["실적진단"] = "지표 산출불가"
 
-    # 3. 수급 팩터 (최근 5일 외인/기관: 35점 만점)
+    # 3. 수급 팩터 (최근 5일 외인/기관: 35점 만점 - 통신오류 vs 실제중립 명확 분리)
     flow_score = 10
+    flow_fetched = False
+    
+    # 3-1. 1차 시도: 모바일 트렌드 API
     try:
         url_inv = f"https://m.stock.naver.com/api/stock/{code}/trend"
         t_json = requests.get(url_inv, headers=headers, timeout=3).json()
-        biz_days = t_json.get("bizDays", [])[:5]
-        
-        frgn_sum = sum(int(str(d.get('frgnPureBuyQuant', '0')).replace(',', '')) for d in biz_days)
-        orgn_sum = sum(int(str(d.get('organPureBuyQuant', '0')).replace(',', '')) for d in biz_days)
+        biz_days = t_json.get("bizDays", [])
+        if biz_days and len(biz_days) > 0:
+            sub_days = biz_days[:5]
+            frgn_sum = sum(int(str(d.get('frgnPureBuyQuant', '0')).replace(',', '')) for d in sub_days)
+            orgn_sum = sum(int(str(d.get('organPureBuyQuant', '0')).replace(',', '')) for d in sub_days)
+            flow_fetched = True
+    except Exception:
+        pass
 
+    # 3-2. 2차 시도: 네이버 금융 웹 테이블 스크래핑 백업
+    if not flow_fetched:
+        try:
+            url_frgn = f"https://finance.naver.com/item/frgn.naver?code={code}"
+            f_html = requests.get(url_frgn, headers=headers, timeout=3).text
+            # 순매수량 테이블 파싱 로직
+            trs = re.findall(r'<tr[^>]*>.*?<td[^>]*class="num"[^>]*>([+-]?[0-9,]+)</td>.*?<td[^>]*class="num"[^>]*>([+-]?[0-9,]+)</td>.*?</tr>', f_html, re.DOTALL)
+            if trs and len(trs) >= 5:
+                frgn_sum = sum(int(item[1].replace(',', '')) for item in trs[:5])
+                orgn_sum = sum(int(item[0].replace(',', '')) for item in trs[:5])
+                flow_fetched = True
+        except Exception:
+            pass
+
+    # 3-3. 수급 결과 판정
+    if flow_fetched:
         if frgn_sum > 0 and orgn_sum > 0:
             flow_score = 35
             default_res["수급"] = "🔥 쌍끌이 매수"
         elif frgn_sum < 0 and orgn_sum < 0:
             flow_score = 0
             default_res["수급"] = "❄️ 양매도 이탈"
-        elif frgn_sum > 0:
+        elif frgn_sum > 0 and orgn_sum <= 0:
             flow_score = 25
             default_res["수급"] = "📈 외인 집중매수"
-        elif orgn_sum > 0:
+        elif orgn_sum > 0 and frgn_sum <= 0:
             flow_score = 20
             default_res["수급"] = "🏢 기관 순매수"
         else:
-            flow_score = 10
-            default_res["수급"] = "중립 수급"
-    except Exception:
-        pass
+            flow_score = 15
+            default_res["수급"] = "⚖️ 수급 균형(중립)"
+    else:
+        flow_score = 10
+        default_res["수급"] = "⚠️ 데이터 집계불가"
 
     # 4. 모멘텀 & 타이밍 팩터 (RSI & 20일선: 35점 만점)
     tech_score = 15
@@ -405,7 +429,7 @@ edited_df = st.data_editor(
     hide_index=True
 )
 
-# 표 하단: 종합의견 산출 기준 안내
+# 표 하단: 종합의견 및 수급 기준 안내
 st.markdown(
     """
     <div style='background-color: #1e2129; padding: 12px 16px; border-radius: 8px; font-size: 13px; color: #d0d4dc; margin-top: 6px; margin-bottom: 12px; border: 1px solid #2d3139;'>
@@ -415,7 +439,8 @@ st.markdown(
         <span style='color: #ff4b4b;'>🔥 <b>강력 매수</b> (85점 이상)</span> &nbsp;|&nbsp; 
         <span style='color: #21c354;'>🟢 <b>매수</b> (70~84점)</span> &nbsp;|&nbsp; 
         <span style='color: #faca2b;'>🟡 <b>관망</b> (50~69점)</span> &nbsp;|&nbsp; 
-        <span style='color: #808495;'>🔴 <b>매도</b> (50점 미만)</span>
+        <span style='color: #808495;'>🔴 <b>매도</b> (50점 미만)</span><br>
+        • <b>수급 진단 구분</b>: 🔥 쌍끌이매수 / ❄️ 양매도이탈 / 📈 외인매수 / 🏢 기관매수 / ⚖️ 수급 균형(중립) / ⚠️ 데이터 집계불가
     </div>
     """,
     unsafe_allow_html=True
