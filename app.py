@@ -14,7 +14,7 @@ DATA_FILE = "portfolio.json"
 st.set_page_config(page_title="Stock Cold-Room", layout="wide", initial_sidebar_state="collapsed")
 
 # =====================================================================
-# [반응형 프리미엄 터미널 커스텀 CSS]
+# [반응형 프리미엄 터미널 및 컬럼 정렬 커스텀 CSS]
 # =====================================================================
 st.markdown("""
 <style>
@@ -45,6 +45,20 @@ st.markdown("""
     [data-testid="stDataFrame"] {
         border: 1px solid #1e293b; border-radius: 8px; overflow: hidden;
     }
+
+    /* -------------------------------------------------------------
+       데이터 에디터 정렬 강제 적용 (종목명/코드: 중앙, 수치데이터: 우측)
+       ------------------------------------------------------------- */
+    div[data-testid="stDataFrame"] th:nth-child(1), div[data-testid="stDataFrame"] td:nth-child(1) { text-align: center !important; }
+    div[data-testid="stDataFrame"] th:nth-child(2), div[data-testid="stDataFrame"] td:nth-child(2) { text-align: center !important; }
+    div[data-testid="stDataFrame"] th:nth-child(3), div[data-testid="stDataFrame"] td:nth-child(3) { text-align: center !important; }
+    div[data-testid="stDataFrame"] th:nth-child(4), div[data-testid="stDataFrame"] td:nth-child(4) { text-align: right !important; }
+    div[data-testid="stDataFrame"] th:nth-child(5), div[data-testid="stDataFrame"] td:nth-child(5) { text-align: right !important; }
+    div[data-testid="stDataFrame"] th:nth-child(6), div[data-testid="stDataFrame"] td:nth-child(6) { text-align: center !important; }
+    div[data-testid="stDataFrame"] th:nth-child(7), div[data-testid="stDataFrame"] td:nth-child(7) { text-align: center !important; }
+    div[data-testid="stDataFrame"] th:nth-child(8), div[data-testid="stDataFrame"] td:nth-child(8) { text-align: right !important; }
+    div[data-testid="stDataFrame"] th:nth-child(9), div[data-testid="stDataFrame"] td:nth-child(9) { text-align: right !important; }
+    div[data-testid="stDataFrame"] th:nth-child(10), div[data-testid="stDataFrame"] td:nth-child(10) { text-align: center !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -160,7 +174,6 @@ def resolve_stock_info(user_input):
     return cleaned, cleaned
 
 def parse_price_to_int(val):
-    """문자열이나 숫자에 콤마가 있든 없든 안전하게 정수로 변환"""
     if not val: return 0
     s = re.sub(r'[^\d]', '', str(val))
     return int(s) if s else 0
@@ -352,7 +365,7 @@ if submitted:
             st.error("등록 실패. 올바른 종목명이나 6자리 코드를 입력하세요.")
 
 # -------------------------------------------------------------
-# 데이터 에디터 테이블 영역 (TextColumn 기반 콤마 포맷팅 적용)
+# 데이터 에디터 테이블 영역 (현재가 컬럼명 변경 완료)
 # -------------------------------------------------------------
 display_rows = []
 codes = st.session_state.stock_df['코드'].tolist()
@@ -371,8 +384,8 @@ if codes:
             "선택": False, 
             "종목명": row["종목명"], 
             "코드": row["코드"],
-            "수동현재가(원)": formatted_m_p,  # 콤마가 찍힌 문자열로 렌더링
-            "현재가(조회/적용)": ans["현재가"], 
+            "현재가": formatted_m_p,  
+            "현재가(정규장)": ans["현재가"], 
             "실적": ans["실적진단"], 
             "수급(5D)": ans["수급"],
             "20일선": ans["20일이격"], 
@@ -382,13 +395,13 @@ if codes:
         })
 
 display_df = pd.DataFrame(display_rows)
-st.caption("⚡ [안내] '수동현재가(원)' 칸을 더블클릭하여 가격(예: 1,662,000 또는 1662000)을 입력하고 엔터를 치면 콤마가 찍히며 즉시 반영됩니다.")
+st.caption("⚡ [안내] '현재가' 칸에 원하는 가격을 입력하고 엔터를 치면 콤마가 찍히며 즉시 반영 및 브리핑에 적용됩니다.")
 
 column_config = {
     "종목명": st.column_config.TextColumn(disabled=True),
     "코드": st.column_config.TextColumn(disabled=True),
-    "수동현재가(원)": st.column_config.TextColumn("수동현재가 (직접수정)", help="야간장 가격 등을 직접 입력하세요 (0이면 정규장 종가 자동 반영)"),
-    "현재가(조회/적용)": st.column_config.TextColumn("현재 적용가", disabled=True),
+    "현재가": st.column_config.TextColumn("현재가", help="야간장 가격 등을 직접 입력하세요 (0이면 정규장 종가 자동 반영)"),
+    "현재가(정규장)": st.column_config.TextColumn("현재가(정규장)", disabled=True),
     "실적": st.column_config.TextColumn(disabled=True),
     "수급(5D)": st.column_config.TextColumn(disabled=True),
     "20일선": st.column_config.TextColumn(disabled=True),
@@ -404,8 +417,7 @@ edited_df = st.data_editor(display_df, key="stock_editor", column_config=column_
 if not edited_df.equals(display_df):
     for idx, row in edited_df.iterrows():
         target_code = row["코드"]
-        # 사용자가 입력한 문자열에서 숫자만 추출하여 저장
-        clean_price = str(parse_price_to_int(row["수동현재가(원)"]))
+        clean_price = str(parse_price_to_int(row["현재가"]))
         st.session_state.stock_df.loc[st.session_state.stock_df["코드"] == target_code, "수동현재가"] = clean_price
     save_to_github(st.session_state.stock_df)
     st.rerun()
