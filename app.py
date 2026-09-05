@@ -11,16 +11,14 @@ import os
 DATA_FILE = "portfolio.json"
 
 # -------------------------------------------------------------
-# GitHub API 연동 함수 (Secrets 하위 섹션 방어 로직 적용)
+# GitHub API 연동 함수
 # -------------------------------------------------------------
 def get_github_config():
     token = None
     repo = None
     try:
-        # 1. 최상단 키 조회 시도
         if "GITHUB_TOKEN" in st.secrets:
             token = str(st.secrets["GITHUB_TOKEN"]).strip()
-        # 2. mysql 등 하위 섹션에 잘못 묶였을 경우 대비
         elif "mysql" in st.secrets and "GITHUB_TOKEN" in st.secrets["mysql"]:
             token = str(st.secrets["mysql"]["GITHUB_TOKEN"]).strip()
 
@@ -36,7 +34,6 @@ def get_github_config():
 def load_portfolio():
     token, repo = get_github_config()
     
-    # 1. GitHub API 원격 로드 (타임스탬프 파라미터로 캐시 차단)
     if token and repo:
         url = f"https://api.github.com/repos/{repo}/contents/{DATA_FILE}?ref=main&t={datetime.datetime.now().timestamp()}"
         headers = {
@@ -56,7 +53,6 @@ def load_portfolio():
         except Exception as e:
             st.error(f"🚨 GitHub API 연결 실패: {e}")
 
-    # 2. 로컬 파일 확인
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -66,15 +62,14 @@ def load_portfolio():
         except Exception:
             pass
 
-    # 3. GitHub 연결 실패 시 빈 데이터프레임 반환
     st.warning("⚠️ GitHub에 저장된 종목 데이터를 가져오지 못했습니다. Secrets 설정과 portfolio.json을 확인하세요.")
     return pd.DataFrame(columns=["종목명", "코드", "매수가"])
 
 def save_to_github(df):
-    data_dict = df.to_dict(orient="records")
+    clean_df = df[["종목명", "코드", "매수가"]].copy()
+    data_dict = clean_df.to_dict(orient="records")
     json_content = json.dumps(data_dict, ensure_ascii=False, indent=2)
     
-    # 로컬 파일 즉시 백업
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             f.write(json_content)
@@ -93,7 +88,6 @@ def save_to_github(df):
     }
 
     try:
-        # 최신 SHA 조회
         res = requests.get(f"{url}?ref=main&t={datetime.datetime.now().timestamp()}", headers=headers, timeout=5)
         sha = res.json().get("sha") if res.status_code == 200 else None
 
@@ -108,7 +102,6 @@ def save_to_github(df):
 
         put_res = requests.put(url, headers=headers, json=payload, timeout=5)
         if put_res.status_code in [200, 201]:
-            # 토스트 대신 세션 상태에 마지막 동기화 시각 기록
             sync_time = datetime.datetime.now(ZoneInfo("Asia/Seoul")).strftime("%H:%M:%S")
             st.session_state["last_sync_time"] = sync_time
             return True
@@ -302,18 +295,8 @@ with st.form("add_stock_form", clear_on_submit=True):
             st.rerun()
 
 # -------------------------------------------------------------
-# 5. 데이터 에디터 (매수가 수정 감지 및 조용한 동기화)
+# 5. 데이터 구성 및 체크박스 기반 에디터
 # -------------------------------------------------------------
-if "stock_editor" in st.session_state and "edited_rows" in st.session_state["stock_editor"]:
-    edited_rows = st.session_state["stock_editor"]["edited_rows"]
-    modified = False
-    for row_idx, changes in edited_rows.items():
-        if "매수가" in changes:
-            st.session_state.stock_df.at[int(row_idx), "매수가"] = int(changes["매수가"])
-            modified = True
-    if modified:
-        save_to_github(st.session_state.stock_df)
-
 display_rows = []
 for idx, row in st.session_state.stock_df.iterrows():
     code = str(row['코드'])
@@ -328,6 +311,7 @@ for idx, row in st.session_state.stock_df.iterrows():
         ret_display = "-"
 
     display_rows.append({
+        "선택": False,
         "종목명": row["종목명"],
         "코드": code,
         "현재가": cur_p,
@@ -340,15 +324,16 @@ for idx, row in st.session_state.stock_df.iterrows():
 
 display_df = pd.DataFrame(display_rows)
 
-# 동기화 시각 하단 캡션 안내
 last_sync = st.session_state.get("last_sync_time")
 sync_label = f" | 💾 GitHub 동기화 완료: {last_sync}" if last_sync else ""
 st.caption(f"⚡ 네이버페이 증권 실시간 체결가 기준으로 자동 갱신됩니다.{sync_label}")
 
-st.data_editor(
+# 데이터 에디터 렌더링 (체크박스 활성화)
+edited_df = st.data_editor(
     display_df,
     key="stock_editor",
     column_config={
+        "선택": st.column_config.CheckboxColumn("선택", help="삭제할 종목을 체크하세요", default=False),
         "종목명": st.column_config.TextColumn(disabled=True),
         "코드": st.column_config.TextColumn(disabled=True),
         "현재가": st.column_config.NumberColumn(format="%d 원", disabled=True),
@@ -362,25 +347,30 @@ st.data_editor(
     hide_index=True
 )
 
+# 매수가 실시간 수정 감지 및 자동 저장
+if "stock_editor" in st.session_state and "edited_rows" in st.session_state["stock_editor"]:
+    edited_rows = st.session_state["stock_editor"]["edited_rows"]
+    modified = False
+    for row_idx, changes in edited_rows.items():
+        if "매수가" in changes:
+            st.session_state.stock_df.at[int(row_idx), "매수가"] = int(changes["매수가"])
+            modified = True
+    if modified:
+        save_to_github(st.session_state.stock_df)
+
 # -------------------------------------------------------------
-# 6. 종목 삭제 관리
+# 6. 체크박스 선택 종목 삭제 버튼
 # -------------------------------------------------------------
-st.markdown("<br>", unsafe_allow_html=True)
-st.markdown("#### 🗑️ 종목 삭제")
-if not st.session_state.stock_df.empty:
-    valid_stocks = st.session_state.stock_df["종목명"].dropna().tolist()
-    if valid_stocks:
-        del_col1, del_col2 = st.columns([3, 1])
-        with del_col1:
-            stock_to_delete = st.selectbox("삭제할 종목 선택", valid_stocks, key="del_select")
-        with del_col2:
-            st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-            if st.button("선택 종목 삭제"):
-                st.session_state.stock_df = st.session_state.stock_df[st.session_state.stock_df["종목명"] != stock_to_delete].reset_index(drop=True)
-                save_to_github(st.session_state.stock_df)
-                if "stock_editor" in st.session_state:
-                    del st.session_state["stock_editor"]
-                st.rerun()
+selected_rows = edited_df[edited_df["선택"] == True]
+col_del_btn, _ = st.columns([2, 5])
+with col_del_btn:
+    if st.button(f"🗑️ 선택 종목 삭제 ({len(selected_rows)}개)", disabled=(len(selected_rows) == 0)):
+        codes_to_remove = selected_rows["코드"].tolist()
+        st.session_state.stock_df = st.session_state.stock_df[~st.session_state.stock_df["코드"].isin(codes_to_remove)].reset_index(drop=True)
+        save_to_github(st.session_state.stock_df)
+        if "stock_editor" in st.session_state:
+            del st.session_state["stock_editor"]
+        st.rerun()
 
 # -------------------------------------------------------------
 # 7. 개별 종목 3개월 차트
