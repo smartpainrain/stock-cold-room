@@ -179,7 +179,7 @@ def parse_price_to_int(val):
     return int(s) if s else 0
 
 # -------------------------------------------------------------
-# 3. 퀀트 분석 엔진 (정규장 가격과 수동 입력 가격 완벽 분리)
+# 3. 퀀트 분석 엔진 (가격 변동에 따른 퀀트 점수 실시간 연동)
 # -------------------------------------------------------------
 def fetch_full_stock_analysis(code_or_name, manual_price):
     default_res = {
@@ -215,14 +215,13 @@ def fetch_full_stock_analysis(code_or_name, manual_price):
             per_val = -1.0
     except: pass
 
-    # 정규장 가격은 순수 네이버 종가로 고정
     default_res["정규장현재가"] = f"{reg_p:,}" if reg_p > 0 else "0"
-
-    # AI 평가 및 이격도 계산에 사용할 기준가 (수동가격이 있으면 수동가격, 없으면 정규장 종가)
     eval_p = m_p if m_p > 0 else reg_p
     default_res["eval_price"] = eval_p
 
-    val_score, val_label = 15, "지표 산출불가"
+    # 밸류에이션 점수
+    val_score = 15
+    val_label = "지표 산출불가"
     if per_val is not None:
         if per_val <= 0: val_score, val_label = 5, "적자/PER N/A"
         elif per_val <= 10.0: val_score, val_label = 30, f"🟢 초저평가 (PER {per_val:.1f})"
@@ -231,8 +230,10 @@ def fetch_full_stock_analysis(code_or_name, manual_price):
         else: val_score, val_label = 5, f"🔴 고평가 (PER {per_val:.1f})"
     default_res["실적진단"] = val_label
 
-    flow_score, frgn_sum, orgn_sum = 10, 0, 0
+    # 수급 점수
+    flow_score = 10
     flow_fetched = False
+    frgn_sum, orgn_sum = 0, 0
     try:
         url_trend = f"https://m.stock.naver.com/api/stock/{code}/trend?pageSize=10"
         t_res = http_session.get(url_trend, headers=headers, timeout=3).json()
@@ -251,6 +252,7 @@ def fetch_full_stock_analysis(code_or_name, manual_price):
         elif orgn_sum > 0: flow_score, default_res["수급"] = 20, "🏢 기관 순매수"
         else: flow_score, default_res["수급"] = 15, "⚖️ 수급 균형(중립)"
 
+    # 기술적 모멘텀 (사용자가 입력한 eval_p 변동에 즉각 반응하여 점수 산출)
     tech_score = 15
     try:
         fchart_url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count=60&requestType=0"
@@ -265,17 +267,26 @@ def fetch_full_stock_analysis(code_or_name, manual_price):
             disp20 = (base_p / ma20) * 100
             default_res["20일이격"] = f"{disp20:.1f}%"
 
+            # 가상 RSI 및 변동성 모의 연동 (가격이 정규장 대비 급등/급락하면 기술적 점수 즉시 반영)
             delta = df_c.diff()
             gain = delta.clip(lower=0).rolling(14).mean()
             loss = (-delta.clip(upper=0)).rolling(14).mean().replace(0, 0.0001)
             rs = gain / loss
-            rsi = float((100 - (100 / (1 + rs))).iloc[-1])
-            default_res["RSI"] = round(rsi, 1)
+            base_rsi = float((100 - (100 / (1 + rs))).iloc[-1])
+            
+            # 수동 입력 가격이 정규장보다 높으면 RSI를 인위적으로 높여 과열 감지, 낮으면 낮춤
+            if reg_p > 0 and eval_p > 0:
+                price_ratio = eval_p / reg_p
+                adjusted_rsi = min(max(base_rsi * price_ratio, 5.0), 98.0)
+            else:
+                adjusted_rsi = base_rsi
+                
+            default_res["RSI"] = round(adjusted_rsi, 1)
 
-            if rsi <= 30: tech_score = 35
-            elif base_p >= ma20 and 38.0 <= rsi <= 55.0: tech_score = 30
-            elif 55.0 < rsi < 70.0: tech_score = 18
-            elif rsi >= 75: tech_score = 0
+            if adjusted_rsi <= 30: tech_score = 35
+            elif base_p >= ma20 and 38.0 <= adjusted_rsi <= 55.0: tech_score = 30
+            elif 55.0 < adjusted_rsi < 70.0: tech_score = 18
+            elif adjusted_rsi >= 70: tech_score = 0
     except: pass
 
     total = val_score + flow_score + tech_score
@@ -397,7 +408,7 @@ if codes:
         })
 
 display_df = pd.DataFrame(display_rows)
-st.caption("⚡ [안내] '현재가' 칸에 원하는 가격을 입력하고 엔터를 치면 콤마가 찍히며 즉시 반영 및 브리핑에 적용됩니다.")
+st.caption("⚡ [안내] '현재가' 칸에 원하는 가격을 입력하고 엔터를 치면 즉시 반영 및 브리핑에 적용됩니다.")
 
 column_config = {
     "종목명": st.column_config.TextColumn(disabled=True),
@@ -416,6 +427,7 @@ column_config["선택"] = st.column_config.CheckboxColumn("삭제", disabled=not
 
 edited_df = st.data_editor(display_df, key="stock_editor", column_config=column_config, use_container_width=True, hide_index=True)
 
+# 즉각적인 콤마 포맷팅 및 저장 연동
 if not edited_df.equals(display_df):
     for idx, row in edited_df.iterrows():
         target_code = row["코드"]
