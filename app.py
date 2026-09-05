@@ -5,12 +5,60 @@ from zoneinfo import ZoneInfo
 import requests
 import yfinance as yf
 import json
+import base64
 import os
 
 DATA_FILE = "portfolio.json"
 
-# 영구 저장소(JSON 파일) 로드 및 저장 함수
+# GitHub API를 통한 영구 저장 함수
+def save_to_github(df):
+    data_dict = df.to_dict(orient="records")
+    json_content = json.dumps(data_dict, ensure_ascii=False, indent=2)
+    
+    try:
+        token = st.secrets["GITHUB_TOKEN"]
+        repo = st.secrets["GITHUB_REPO"]
+    except Exception:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            f.write(json_content)
+        return
+
+    url = f"https://api.github.com/repos/{repo}/contents/{DATA_FILE}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json"
+    }
+    
+    res = requests.get(url, headers=headers)
+    sha = res.json().get("sha") if res.status_code == 200 else None
+    
+    encoded_content = base64.b64encode(json_content.encode("utf-8")).decode("utf-8")
+    
+    payload = {
+        "message": f"Update portfolio via Streamlit [skip ci]",
+        "content": encoded_content,
+        "branch": "main"
+    }
+    if sha:
+        payload["sha"] = sha
+        
+    requests.put(url, headers=headers, json=payload)
+
+# 영구 저장소 로드 함수
 def load_portfolio():
+    try:
+        token = st.secrets["GITHUB_TOKEN"]
+        repo = st.secrets["GITHUB_REPO"]
+        url = f"https://api.github.com/repos/{repo}/contents/{DATA_FILE}"
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+        res = requests.get(url, headers=headers)
+        if res.status_code == 200:
+            file_data = res.json()
+            decoded_content = base64.b64decode(file_data["content"]).decode("utf-8")
+            return pd.DataFrame(json.loads(decoded_content))
+    except Exception:
+        pass
+
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -18,18 +66,14 @@ def load_portfolio():
                 return pd.DataFrame(data)
         except Exception:
             pass
-    # 파일이 없거나 깨졌을 때 기본값
+
     default_df = pd.DataFrame([
         {"종목명": "삼성전자", "코드": "005930", "매수가": 72000},
         {"종목명": "SK하이닉스", "코드": "000660", "매수가": 165000},
         {"종목명": "한화에어로스페이스", "코드": "012450", "매수가": 310000},
     ])
-    save_portfolio(default_df)
+    save_to_github(default_df)
     return default_df
-
-def save_portfolio(df):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(df.to_dict(orient="records"), f, ensure_ascii=False, indent=2)
 
 # 1. 상단 타이틀 및 KST 실시간 시각
 st.markdown("### stock-cold-room", unsafe_allow_html=True)
@@ -71,7 +115,7 @@ with col_h2:
 
 st.divider()
 
-# 종목명/코드 매핑 사전
+# 종목명/코드 매핑 사전 (sk이노베이션 추가 완료)
 TICKER_DICT = {
     "삼성전자": "005930",
     "sk하이닉스": "000660",
@@ -85,7 +129,8 @@ TICKER_DICT = {
     "현대차": "005380",
     "기아": "000270",
     "카카오": "035720",
-    "네이버": "035420"
+    "네이버": "035420",
+    "sk이노베이션": "096770"
 }
 
 def resolve_code(name_or_code: str) -> str:
@@ -95,11 +140,13 @@ def resolve_code(name_or_code: str) -> str:
             return v
     if len(cleaned) == 6 and cleaned.isdigit():
         return cleaned
-    cleaned = cleaned.replace(".ks", "").replace(".kq", "")
-    return cleaned
+    # 사전에 없고 6자리 숫자가 아닐 경우 빈 문자열을 반환하여 이름이 코드로 들어가는 것을 방지
+    return ""
 
 @st.cache_data(ttl=15)
 def fetch_naver_realtime_price(code: str) -> int:
+    if not code:
+        return 0
     try:
         url = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -114,6 +161,8 @@ def fetch_naver_realtime_price(code: str) -> int:
 @st.cache_data(ttl=60)
 def analyze_technical_signals(code: str, cur_price: int):
     default_res = {"RSI": 50.0, "20일이격": 100.0, "추천": "🟡 관망"}
+    if not code:
+        return default_res
     ticker = f"{code}.KS"
     try:
         hist = yf.Ticker(ticker).history(period="3mo")
@@ -165,7 +214,7 @@ def analyze_technical_signals(code: str, cur_price: int):
     except Exception:
         return default_res
 
-# 2. 영구 파일 기반 포트폴리오 로드
+# 2. GitHub 기반 포트폴리오 로드
 if 'stock_df' not in st.session_state:
     st.session_state.stock_df = load_portfolio()
 
@@ -175,7 +224,7 @@ st.markdown("#### 🎯 종목 모니터링 (네이버 실시간 시세 연동)")
 with st.form("add_stock_form", clear_on_submit=True):
     col_input, col_buy, col_btn = st.columns([3, 2, 1])
     with col_input:
-        input_name = st.text_input("종목명 또는 종목코드(6자리)", placeholder="예: SK하이닉스 또는 000660")
+        input_name = st.text_input("종목명 또는 종목코드(6자리)", placeholder="예: SK이노베이션 또는 096770")
     with col_buy:
         input_buy = st.number_input("매수가 (원)", min_value=0, value=0, step=100)
     with col_btn:
@@ -184,16 +233,19 @@ with st.form("add_stock_form", clear_on_submit=True):
     
     if submitted and input_name.strip():
         code = resolve_code(input_name)
-        new_row = pd.DataFrame([{
-            "종목명": input_name.strip(),
-            "코드": code,
-            "매수가": int(input_buy)
-        }])
-        st.session_state.stock_df = pd.concat([st.session_state.stock_df, new_row], ignore_index=True)
-        save_portfolio(st.session_state.stock_df)  # 파일 영구 저장
-        st.rerun()
+        if not code:
+            st.error("등록되지 않은 종목명이거나 올바른 6자리 종목코드가 아닙니다. (TICKER_DICT에 추가 필요)")
+        else:
+            new_row = pd.DataFrame([{
+                "종목명": input_name.strip(),
+                "코드": code,
+                "매수가": int(input_buy)
+            }])
+            st.session_state.stock_df = pd.concat([st.session_state.stock_df, new_row], ignore_index=True)
+            save_to_github(st.session_state.stock_df)
+            st.rerun()
 
-# 4. 데이터 에디터 매수가 변경사항 선반영 및 파일 영구 저장
+# 4. 데이터 에디터 매수가 변경사항 선반영 및 GitHub 자동 커밋
 if "stock_editor" in st.session_state and "edited_rows" in st.session_state["stock_editor"]:
     edited_rows = st.session_state["stock_editor"]["edited_rows"]
     modified = False
@@ -202,12 +254,12 @@ if "stock_editor" in st.session_state and "edited_rows" in st.session_state["sto
             st.session_state.stock_df.at[int(row_idx), "매수가"] = int(changes["매수가"])
             modified = True
     if modified:
-        save_portfolio(st.session_state.stock_df)
+        save_to_github(st.session_state.stock_df)
 
 # 5. 실시간 가격 및 기술적 지표 계산
 display_rows = []
 for idx, row in st.session_state.stock_df.iterrows():
-    code = row['코드']
+    code = str(row['코드'])
     cur_p = fetch_naver_realtime_price(code)
     sig = analyze_technical_signals(code, cur_p)
     buy_p = int(row["매수가"])
@@ -236,7 +288,7 @@ for idx, row in st.session_state.stock_df.iterrows():
 
 display_df = pd.DataFrame(display_rows)
 
-st.caption("⚡ 네이버페이 증권 실시간 체결가 기준으로 자동 갱신됩니다. 매수가 수정/삭제 내역은 새로고침해도 영구 보존됩니다.")
+st.caption("⚡ 네이버페이 증권 실시간 체결가 기준으로 자동 갱신됩니다. 매수가 수정/삭제 내역은 GitHub에 자동 커밋되어 영구 보존됩니다.")
 
 st.data_editor(
     display_df,
@@ -255,7 +307,7 @@ st.data_editor(
     hide_index=True
 )
 
-# 6. 종목 삭제 관리 (영구 삭제 적용)
+# 6. 종목 삭제 관리
 st.markdown("<br>", unsafe_allow_html=True)
 st.markdown("#### 🗑️ 종목 삭제")
 if not st.session_state.stock_df.empty:
@@ -268,7 +320,7 @@ if not st.session_state.stock_df.empty:
             st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
             if st.button("선택 종목 삭제"):
                 st.session_state.stock_df = st.session_state.stock_df[st.session_state.stock_df["종목명"] != stock_to_delete].reset_index(drop=True)
-                save_portfolio(st.session_state.stock_df)  # 삭제 후 파일 영구 저장
+                save_to_github(st.session_state.stock_df)
                 if "stock_editor" in st.session_state:
                     del st.session_state["stock_editor"]
                 st.rerun()
@@ -280,15 +332,16 @@ current_stocks = st.session_state.stock_df["종목명"].dropna().tolist()
 if current_stocks:
     selected_stock = st.selectbox("차트를 확인할 종목을 선택하세요", current_stocks)
     matched_row = st.session_state.stock_df[st.session_state.stock_df["종목명"] == selected_stock]
-    target_code = matched_row["코드"].values[0] if not matched_row.empty else "005930"
+    target_code = str(matched_row["코드"].values[0]) if not matched_row.empty else "005930"
     
-    try:
-        chart_data = yf.Ticker(f"{target_code}.KS").history(period="3mo")['Close']
-        if chart_data.empty:
-            chart_data = yf.Ticker(f"{target_code}.KQ").history(period="3mo")['Close']
-        if not chart_data.empty:
-            st.line_chart(chart_data)
-        else:
-            st.info("시세 데이터를 가져올 수 없습니다.")
-    except Exception:
-        st.info("차트 통신 지연 중입니다.")
+    if target_code:
+        try:
+            chart_data = yf.Ticker(f"{target_code}.KS").history(period="3mo")['Close']
+            if chart_data.empty:
+                chart_data = yf.Ticker(f"{target_code}.KQ").history(period="3mo")['Close']
+            if not chart_data.empty:
+                st.line_chart(chart_data)
+            else:
+                st.info("시세 데이터를 가져올 수 없습니다.")
+        except Exception:
+            st.info("차트 통신 지연 중입니다.")
