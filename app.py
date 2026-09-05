@@ -104,7 +104,7 @@ def save_to_github(df):
         return False
 
 # -------------------------------------------------------------
-# 2. 퀀트 멀티 팩터 분석 엔진 (수급 파싱 완전 복구)
+# 2. 퀀트 멀티 팩터 분석 엔진
 # -------------------------------------------------------------
 TICKER_DICT = {
     "삼성전자": "005930", "sk하이닉스": "000660", "한화에어로스페이스": "012450", 
@@ -218,48 +218,59 @@ def fetch_full_stock_analysis(code: str):
     except Exception:
         default_res["실적진단"] = "지표 산출불가"
 
-    # 3. 수급 팩터 (최근 5일 외인/기관 순매수 수급 트래커)
+    # 3. 수급 팩터 (네이버 공식 매매동향 직접 파싱 - 외부 라이브러리 의존성 제로)
     flow_score = 10
     flow_fetched = False
     frgn_sum = 0
     orgn_sum = 0
 
-    # 1순위: 네이버 증권 외국인/기관 매매동향 웹 테이블 파싱 (pandas.read_html)
+    # 1순위: 네이버 증권 외국인/기관 매매동향 웹페이지 직접 파싱
     try:
         url_frgn = f"https://finance.naver.com/item/frgn.naver?code={code}"
-        tables = pd.read_html(requests.get(url_frgn, headers=headers, timeout=3).text)
-        for tbl in tables:
-            # 다중 헤더 플랫화
-            cols = [" ".join([str(c) for c in col if "Unnamed" not in str(c)]).strip() if isinstance(col, tuple) else str(col) for col in tbl.columns]
-            tbl.columns = cols
-            
-            # 날짜 및 순매매량 컬럼 매칭
-            date_col = next((c for c in tbl.columns if "날짜" in c), None)
-            orgn_col = next((c for c in tbl.columns if "기관" in c and "순매매" in c), None)
-            frgn_col = next((c for c in tbl.columns if "외국인" in c and "순매매" in c), None)
-            
-            if date_col and orgn_col and frgn_col:
-                valid_df = tbl.dropna(subset=[date_col])
-                # 유효한 거래일 행만 필터링 (날짜 형식 YYYY.MM.DD)
-                valid_df = valid_df[valid_df[date_col].astype(str).str.contains(r'\d{4}\.\d{2}\.\d{2}', regex=True)].head(5)
-                if len(valid_df) >= 3:
-                    orgn_sum = valid_df[orgn_col].astype(str).str.replace(",", "").str.replace("+", "").astype(int).sum()
-                    frgn_sum = valid_df[frgn_col].astype(str).str.replace(",", "").str.replace("+", "").astype(int).sum()
-                    flow_fetched = True
-                    break
+        f_res = requests.get(url_frgn, headers=headers, timeout=4)
+        f_res.encoding = 'euc-kr'
+        f_html = f_res.text
+
+        # 날짜 행(YYYY.MM.DD)을 포함하는 모든 데이터 행 추출
+        row_matches = re.findall(r'<tr[^>]*>.*?<td class="tc"[^>]*>.*?[0-9]{4}\.[0-9]{2}\.[0-9]{2}.*?</tr>', f_html, re.DOTALL)
+        
+        parsed_orgn = []
+        parsed_frgn = []
+
+        for row in row_matches[:5]:
+            # 행 내부의 모든 <td> 태그 추출
+            tds = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL)
+            if len(tds) >= 7:
+                # td[5]: 기관 순매매량, td[6]: 외국인 순매매량
+                raw_orgn = re.sub(r'<[^>]+>', '', tds[5]).replace(',', '').strip()
+                raw_frgn = re.sub(r'<[^>]+>', '', tds[6]).replace(',', '').strip()
+                if raw_orgn.lstrip('+-').isdigit():
+                    parsed_orgn.append(int(raw_orgn))
+                if raw_frgn.lstrip('+-').isdigit():
+                    parsed_frgn.append(int(raw_frgn))
+
+        if len(parsed_orgn) >= 3 and len(parsed_frgn) >= 3:
+            orgn_sum = sum(parsed_orgn)
+            frgn_sum = sum(parsed_frgn)
+            flow_fetched = True
     except Exception:
         pass
 
-    # 2순위: 모바일 API 백업
+    # 2순위: 네이버 모바일 API 백업 (응답 형태가 list 또는 dict인 경우 모두 대응)
     if not flow_fetched:
         try:
-            url_inv = f"https://m.stock.naver.com/api/stock/{code}/trend"
-            t_json = requests.get(url_inv, headers=headers, timeout=3).json()
-            biz_days = t_json.get("bizDays", [])
-            if biz_days:
-                sub_days = biz_days[:5]
-                frgn_sum = sum(int(str(d.get('frgnPureBuyQuant', '0')).replace(',', '')) for d in sub_days)
-                orgn_sum = sum(int(str(d.get('organPureBuyQuant', '0')).replace(',', '')) for d in sub_days)
+            url_trend = f"https://m.stock.naver.com/api/stock/{code}/trend?pageSize=10"
+            trend_res = requests.get(url_trend, headers=headers, timeout=3).json()
+            days_data = []
+            if isinstance(trend_res, list):
+                days_data = trend_res
+            elif isinstance(trend_res, dict):
+                days_data = trend_res.get("bizDays") or trend_res.get("items") or []
+
+            if days_data:
+                sub_days = days_data[:5]
+                frgn_sum = sum(int(str(d.get('frgnPureBuyQuant', 0)).replace(',', '')) for d in sub_days)
+                orgn_sum = sum(int(str(d.get('organPureBuyQuant', 0)).replace(',', '')) for d in sub_days)
                 flow_fetched = True
         except Exception:
             pass
@@ -353,7 +364,7 @@ def fetch_full_stock_analysis(code: str):
 # -------------------------------------------------------------
 # 3. 화면 렌더링
 # -------------------------------------------------------------
-st.markdown("### 📡 Stock Cold-Room Terminal", unsafe_allow_html=True)
+st.markdown("### 📡 Stock Cold-Room", unsafe_allow_html=True)
 
 @st.cache_data(ttl=15)
 def get_kospi_data():
