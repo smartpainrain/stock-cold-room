@@ -12,14 +12,18 @@ import concurrent.futures
 
 DATA_FILE = "portfolio.json"
 
-st.set_page_config(page_title="Stock Cold-Room", layout="wide")
+st.set_page_config(
+    page_title="Stock Cold-Room", 
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 # =====================================================================
 # [글로벌 탑티어 터미널 커스텀 CSS 디자인 적용]
 # =====================================================================
 st.markdown("""
 <style>
-    /* 전체 배경 및 폰트 세팅 */
+    /* 전체 배경 세팅 */
     .stApp {
         background-color: #0b0f19;
     }
@@ -36,8 +40,9 @@ st.markdown("""
         z-index: 99999;
     }
     
-    /* 기본 헤더/푸터 숨김 처리로 앱 느낌 극대화 */
-    header {visibility: hidden;}
+    /* 사이드바 토글 버튼은 유지하고, 우측 기본 메뉴/푸터만 정밀 숨김 */
+    #MainMenu {visibility: hidden;}
+    [data-testid="stToolbar"] {visibility: hidden;}
     footer {visibility: hidden;}
     
     /* 입력 폼 컨테이너 고급화 */
@@ -413,7 +418,7 @@ def fetch_full_stock_analysis(code: str):
     return default_res
 
 # -------------------------------------------------------------
-# 3. 화면 렌더링 (병렬 처리 및 프리미엄 디자인 적용)
+# 3. 화면 렌더링 (병렬 처리 및 헤더 구성)
 # -------------------------------------------------------------
 @st.cache_data(ttl=15)
 def get_kospi_html(update_time_str):
@@ -477,7 +482,9 @@ with col_kospi:
     now_str = datetime.datetime.now(ZoneInfo("Asia/Seoul")).strftime("%H:%M:%S KST")
     st.markdown(f"<div style='text-align: right;'>{get_kospi_html(now_str)}</div>", unsafe_allow_html=True)
 
-# 사이드바 관리자 인증 영역
+# -------------------------------------------------------------
+# 사이드바 관리자 인증 영역 (완벽 복구)
+# -------------------------------------------------------------
 with st.sidebar:
     st.markdown("### 🔐 SYSTEM LOGIN")
     if not st.session_state.is_admin:
@@ -614,10 +621,6 @@ with col_del_btn:
 # 4. 차트 터미널 및 퀀트 융합형 AI 애널리스트 브리핑
 # -------------------------------------------------------------
 def get_ai_analyst_opinion(df, code_name, quant_score, quant_status):
-    """
-    상단 테이블의 퀀트 스코어(실적+수급)와 하단 차트 지표(추세+모멘텀+변동성)를 
-    결합하여 입체적인 시나리오를 도출해내는 AI 추론 알고리즘
-    """
     if df.empty or len(df) < 60:
         return "<div style='color: #94a3b8;'>데이터가 부족하여 분석할 수 없습니다.</div>"
     
@@ -665,7 +668,7 @@ def get_ai_analyst_opinion(df, code_name, quant_score, quant_status):
     # 3. 퀀트 + 기술적 지표 융합(Synthesis) 시나리오 추론
     summary_text = f"현재 퀀트 시스템 종합 점수는 <b style='color:#ffffff;'>{quant_score}점({quant_status})</b>입니다. "
     
-    if quant_score >= 70: # 펀더멘털 & 수급 우수
+    if quant_score >= 70:
         if is_uptrend:
             if macd_cross_down or (not macd_bull and is_upper):
                 summary_text += "실적과 메이저 수급 등 펀더멘털이 우수하며 기본 추세도 견조합니다. 다만 차트상 단기 과열 징후와 모멘텀 둔화 시그널이 발생했으므로, 밴드 하단이나 20일선 눌림목을 활용한 분할 매수 전략이 가장 유효합니다."
@@ -679,7 +682,7 @@ def get_ai_analyst_opinion(df, code_name, quant_score, quant_status):
         else:
             summary_text += "퀀트 지표가 매우 우수해 중장기 전망이 밝은 가운데, 차트는 방향성을 응축하는 횡보 국면입니다. 이러한 박스권 횡보는 대개 2차 상승을 위한 매집 과정일 확률이 높으므로 비중을 확대해 볼 만한 위치입니다."
             
-    else: # 펀더멘털 & 수급 부족 또는 혼조 (관망/매도)
+    else:
         if is_uptrend:
             summary_text += "차트상 상승 추세를 유지하고 있으나, 수급 이탈이나 고평가 밸류에이션 부담 등으로 퀀트 종합 점수가 저조합니다. 펀더멘털의 뒷받침이 약하므로, 철저하게 기술적 지표와 손절선(20일선)에 의존하는 짧은 단기 트레이딩 관점으로만 접근하시기 바랍니다."
         elif is_downtrend:
@@ -708,18 +711,15 @@ if current_stocks:
     matched_row = st.session_state.stock_df[st.session_state.stock_df["종목명"] == selected_stock]
     target_code = str(matched_row["코드"].values[0]) if not matched_row.empty else "005930"
     
-    # 상단 테이블에서 해당 종목의 퀀트 스코어/상태 파싱
     quant_score = 50
     quant_status = "🟡 관망"
     if not display_df.empty:
         matched_display = display_df[display_df["종목명"] == selected_stock]
         if not matched_display.empty:
             opinion_str = matched_display["종합의견"].values[0]
-            # 예: "🔥 강력 매수 (85점)" -> 숫자 85 추출
             match = re.search(r'\((\d+)점\)', opinion_str)
             if match:
                 quant_score = int(match.group(1))
-            # 상태 문자열 추출
             quant_status = opinion_str.split('(')[0].strip()
     
     if target_code:
@@ -753,7 +753,6 @@ if current_stocks:
                 with tab3:
                     st.bar_chart(df_view['Volume'])
                 
-                # 상단 퀀트 점수를 AI 애널리스트 함수에 전달하여 융합 브리핑 생성
                 st.markdown(get_ai_analyst_opinion(df_chart, selected_stock, quant_score, quant_status), unsafe_allow_html=True)
                 
             else:
