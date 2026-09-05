@@ -86,7 +86,6 @@ def load_portfolio():
     if df.empty:
         return pd.DataFrame(columns=["종목명", "코드", "수동현재가"])
     
-    # 레거시 데이터 호환용 컬럼 보정
     if "수동현재가" not in df.columns:
         df["수동현재가"] = 0
     return df[["종목명", "코드", "수동현재가"]].copy()
@@ -119,7 +118,7 @@ def save_to_github(df):
     return False
 
 # -------------------------------------------------------------
-# 2. 확실하고 빠른 종목 추가 (내부 사전 + 코드 직입력 완벽 대응)
+# 2. 확실하고 빠른 종목 추가
 # -------------------------------------------------------------
 TICKER_DICT = {
     "삼성전자": "005930", "SK하이닉스": "000660", "한화에어로스페이스": "012450", 
@@ -129,13 +128,10 @@ TICKER_DICT = {
 }
 
 def resolve_stock_info(user_input):
-    """입력된 종목명 또는 6자리 코드를 분석하여 (종목명, 코드)를 확정합니다."""
     cleaned = str(user_input).strip()
     if not cleaned: return None, None
     
-    # 1. 6자리 숫자로 입력한 경우
     if len(cleaned) == 6 and cleaned.isdigit():
-        # 코드로 이름 역추적 시도
         found_name = cleaned
         for k, v in TICKER_DICT.items():
             if v == cleaned:
@@ -143,14 +139,23 @@ def resolve_stock_info(user_input):
                 break
         return found_name, cleaned
         
-    # 2. 내부 사전 검색
     cleaned_lower = cleaned.lower().replace(" ", "")
     for k, v in TICKER_DICT.items():
         if k.lower().replace(" ", "") == cleaned_lower:
             return k, v
             
-    # 3. 네이버 메인 페이지 타이틀 스크래핑을 통한 안전한 종목명/코드 획득 (API 차단 우회)
-    # 사용자가 종목명을 직접 치고 등록할 때 가장 확실한 방법은 이름을 그대로 종목명으로 쓰고 코드를 매핑하는 것입니다.
+    try:
+        m_url = f"https://m.stock.naver.com/api/json/search/searchListJson.nhn?keyword={requests.utils.quote(cleaned)}"
+        m_res = http_session.get(m_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3).json()
+        items = m_res.get("result", {}).get("totallist", [])
+        if items:
+            for item in items:
+                code = str(item.get("itemcode", "")).strip()
+                name = str(item.get("name", "")).strip()
+                if len(code) == 6 and code.isdigit():
+                    return name, code
+    except: pass
+    
     return cleaned, cleaned
 
 def safe_parse_price(val):
@@ -159,7 +164,7 @@ def safe_parse_price(val):
     return int(s) if s else 0
 
 # -------------------------------------------------------------
-# 3. 퀀트 분석 엔진 (정규장 종가 기준 + 수동 입력 반영)
+# 3. 퀀트 분석 엔진 (안전한 수동 가격 파싱 적용)
 # -------------------------------------------------------------
 def fetch_full_stock_analysis(code_or_name, manual_price):
     default_res = {
@@ -167,11 +172,13 @@ def fetch_full_stock_analysis(code_or_name, manual_price):
         "20일이격": "-", "RSI": 50.0, "종합의견": "🟡 관망 (50점)"
     }
     
-    # 코드가 6자리 숫자가 아니면 딕셔너리나 수동 입력값 활용
     code = TICKER_DICT.get(code_or_name, code_or_name)
     if not code or not str(code).isdigit() or len(str(code)) != 6:
-        # 코드가 없으면 수동 입력값만 반영하고 리턴
-        p = int(manual_price) if manual_price else 0
+        # 수동 가격 방어형 파싱
+        try:
+            p = int(str(manual_price).replace(",", "")) if manual_price else 0
+        except:
+            p = 0
         default_res["현재가"] = f"{p:,}"
         return default_res
 
@@ -183,12 +190,10 @@ def fetch_full_stock_analysis(code_or_name, manual_price):
         url_main = f"https://finance.naver.com/item/main.naver?code={code}"
         main_res = http_session.get(url_main, headers=headers, timeout=3).text
         
-        # 정규장 종가 추출
         reg_match = re.search(r'<p class="no_today">\s*<em.*?<span class="blind">([\d,]+)</span>', main_res, re.DOTALL)
         if reg_match: 
             reg_p = int(reg_match.group(1).replace(",", ""))
             
-        # PER 추출
         per_match = re.search(r'id="_per">([0-9\.,]+)<', main_res)
         if per_match:
             try: per_val = float(per_match.group(1).replace(",", ""))
@@ -197,11 +202,15 @@ def fetch_full_stock_analysis(code_or_name, manual_price):
             per_val = -1.0
     except: pass
 
-    # 수동 입력 가격이 있으면 수동 가격 우선 적용, 없으면 정규장 종가
-    cur_p = int(manual_price) if manual_price and int(manual_price) > 0 else reg_p
+    # 수동 가격 안전 변환
+    try:
+        m_p = int(str(manual_price).replace(",", "")) if manual_price and str(manual_price).strip() != "" else 0
+    except:
+        m_p = 0
+
+    cur_p = m_p if m_p > 0 else reg_p
     default_res["현재가"] = f"{cur_p:,}" if cur_p > 0 else "0"
 
-    # 밸류에이션 진단
     val_score, val_label = 15, "지표 산출불가"
     if per_val is not None:
         if per_val <= 0: val_score, val_label = 5, "적자/PER N/A"
@@ -209,9 +218,8 @@ def fetch_full_stock_analysis(code_or_name, manual_price):
         elif per_val <= 18.0: val_score, val_label = 22, f"적정가치 (PER {per_val:.1f})"
         elif per_val <= 30.0: val_score, val_label = 12, f"성장프리미엄 (PER {per_val:.1f})"
         else: val_score, val_label = 5, f"🔴 고평가 (PER {per_val:.1f})"
-    default_res["실실적진단"] = val_label
+    default_res["실적진단"] = val_label
 
-    # 수급 팩터 (모바일 트렌드 API)
     flow_score, frgn_sum, orgn_sum = 10, 0, 0
     flow_fetched = False
     try:
@@ -232,7 +240,6 @@ def fetch_full_stock_analysis(code_or_name, manual_price):
         elif orgn_sum > 0: flow_score, default_res["수급"] = 20, "🏢 기관 순매수"
         else: flow_score, default_res["수급"] = 15, "⚖️ 수급 균형(중립)"
 
-    # 차트 모멘텀 (Fchart API)
     tech_score = 15
     try:
         fchart_url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count=60&requestType=0"
@@ -330,7 +337,6 @@ st.markdown("<br>", unsafe_allow_html=True)
 if 'stock_df' not in st.session_state:
     st.session_state.stock_df = load_portfolio()
 
-# 종목 추가 폼 (종목명 또는 코드 직접 등록)
 with st.form("add_stock_form", clear_on_submit=True):
     col_in, col_bt = st.columns([4, 1])
     with col_in:
@@ -350,7 +356,7 @@ if submitted:
             st.error("등록 실패. 올바른 종목명이나 6자리 코드를 입력하세요.")
 
 # -------------------------------------------------------------
-# 데이터 에디터 테이블 영역 (수동현재가 편집 가능)
+# 데이터 에디터 테이블 영역
 # -------------------------------------------------------------
 display_rows = []
 codes = st.session_state.stock_df['코드'].tolist()
@@ -368,7 +374,7 @@ if codes:
             "코드": row["코드"],
             "수동현재가(원)": int(row["수동현재가"]) if '수동현재가' in row and pd.notnull(row["수동현재가"]) else 0,
             "현재가(조회/적용)": ans["현재가"], 
-            "실적": ans.get("실실적진단", "-"), 
+            "실적": ans["실적진단"], 
             "수급(5D)": ans["수급"],
             "20일선": ans["20일이격"], 
             "RSI": ans["RSI"], 
@@ -376,12 +382,12 @@ if codes:
         })
 
 display_df = pd.DataFrame(display_rows)
-st.caption("⚡ [안내] '수동현재가(원)' 칸에 원하는 가격(예: 1662000)을 직접 입력하고 엔터를 치면 즉시 반영됩니다.")
+st.caption("⚡ [안내] '수동현재가(원)' 칸에 원하는 가격을 직접 입력하고 엔터를 치면 즉시 반영됩니다.")
 
 column_config = {
     "종목명": st.column_config.TextColumn(disabled=True),
     "코드": st.column_config.TextColumn(disabled=True),
-    "수동현재가(원)": st.column_config.NumberColumn("수동현재가 (직접수정)", format="%d", help="NXT 야간장 가격 등을 직접 입력하세요 (0이면 정규장 종가 자동 반영)"),
+    "수동현재가(원)": st.column_config.NumberColumn("수동현재가 (직접수정)", format="%d", help="야간장 가격 등을 직접 입력하세요 (0이면 정규장 종가 자동 반영)"),
     "현재가(조회/적용)": st.column_config.TextColumn("현재 적용가", disabled=True),
     "실적": st.column_config.TextColumn(disabled=True),
     "수급(5D)": st.column_config.TextColumn(disabled=True),
@@ -392,10 +398,8 @@ column_config = {
 
 column_config["선택"] = st.column_config.CheckboxColumn("삭제", disabled=not st.session_state.is_admin, default=False)
 
-# 테이블에서 수동현재가를 직접 수정할 수 있게 에디터 제공
 edited_df = st.data_editor(display_df, key="stock_editor", column_config=column_config, use_container_width=True, hide_index=True)
 
-# 사용자가 에디터에서 수동현재가를 수정했을 때 실시간 반영 및 GitHub 저장
 if not edited_df.equals(display_df):
     for idx, row in edited_df.iterrows():
         target_code = row["코드"]
@@ -485,7 +489,7 @@ if codes:
             df_c['Signal'] = df_c['MACD'].ewm(span=9).mean()
             
             df_v = df_c.iloc[-90:]
-            t1, t2, t3 = t1, t2, t3 = st.tabs(["💰 가격/밴드", "📉 MACD", "📊 거래량"])
+            t1, t2, t3 = st.tabs(["💰 가격/밴드", "📉 MACD", "📊 거래량"])
             with t1: st.line_chart(df_v[['Close', 'MA20', 'BB_Upper', 'BB_Lower']])
             with t2: st.line_chart(df_v[['MACD', 'Signal']])
             with t3: st.bar_chart(df_v['Volume'])
