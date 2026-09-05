@@ -7,6 +7,7 @@ import yfinance as yf
 import json
 import base64
 import os
+import re
 
 DATA_FILE = "portfolio.json"
 
@@ -103,7 +104,7 @@ def save_to_github(df):
         return False
 
 # -------------------------------------------------------------
-# 2. 퀀트 멀티 팩터 분석 엔진 (NXT 시세 및 완벽 지표 파싱 탑재)
+# 2. 퀀트 멀티 팩터 분석 엔진 (NXT 시세 및 지표 파싱)
 # -------------------------------------------------------------
 TICKER_DICT = {
     "삼성전자": "005930", "sk하이닉스": "000660", "한화에어로스페이스": "012450", 
@@ -142,20 +143,17 @@ def fetch_full_stock_analysis(code: str):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
 
-    # 1. NXT(넥스트레이드) / 시간외 / 정규장 가격 계층형 추적
+    # 1. NXT 및 실시간 가격 탐색
     cur_p = 0
     try:
-        # 네이버 모바일 통합 데이터에서 실시간/시간외/NXT 체결 탐색
         url_intg = f"https://m.stock.naver.com/api/stock/{code}/integration"
         intg_res = requests.get(url_intg, headers=headers, timeout=3).json()
         
-        # 1-1. NXT 또는 장외 체결가 우선 탐색
         deal_info = intg_res.get("dealInfo", {})
         nxt_p = deal_info.get("overMarketPrice") or deal_info.get("nxtPrice")
         if nxt_p:
             cur_p = int(str(nxt_p).replace(",", ""))
         
-        # 1-2. 정규장 최근 체결가 대체
         if cur_p == 0:
             recent_p = intg_res.get("recentInfo", {}).get("closePrice") or deal_info.get("closePrice")
             if recent_p:
@@ -163,7 +161,6 @@ def fetch_full_stock_analysis(code: str):
     except Exception:
         pass
 
-    # 1-3. 보조: polling API 폴백
     if cur_p == 0:
         try:
             url_rt = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
@@ -175,38 +172,28 @@ def fetch_full_stock_analysis(code: str):
             
     default_res["현재가"] = cur_p
 
-    # 2. 밸류에이션 팩터 (PER / EPS 다중 경로 정밀 파싱: 30점 만점)
+    # 2. 밸류에이션 팩터 (PER / EPS: 30점 만점)
     val_score = 15
     val_label = "보통"
     per_val = None
-    eps_val = None
 
     try:
-        # 네이버 증권 데스크톱 기본정보 API (가장 안정적인 PER/EPS 제공)
         url_basic = f"https://finance.naver.com/item/main.naver?code={code}"
         basic_res = requests.get(url_basic, headers=headers, timeout=3).text
         
-        # HTML 내 핵심 JSON/수치 정규 탐색
-        import re
         per_match = re.search(r'id="_per">([0-9\.,]+)<', basic_res)
-        eps_match = re.search(r'id="_eps">([0-9\.,]+)<', basic_res)
-        
         if per_match:
             per_val = float(per_match.group(1).replace(",", ""))
-        if eps_match:
-            eps_val = float(eps_match.group(1).replace(",", ""))
             
-        # 보조: integration API 내 consensus/totalInfos 재탐색
-        if per_val is None:
-            if 'intg_res' in locals():
-                consensus = intg_res.get("consensusInfo", {})
-                raw_per = consensus.get("per")
-                if raw_per:
-                    per_val = float(str(raw_per).replace(",", ""))
-                for item in intg_res.get("totalInfos", []):
-                    if "PER" in item.get("key", ""):
-                        per_val = float(str(item.get("value")).replace(",", ""))
-                        break
+        if per_val is None and 'intg_res' in locals():
+            consensus = intg_res.get("consensusInfo", {})
+            raw_per = consensus.get("per")
+            if raw_per:
+                per_val = float(str(raw_per).replace(",", ""))
+            for item in intg_res.get("totalInfos", []):
+                if "PER" in item.get("key", ""):
+                    per_val = float(str(item.get("value")).replace(",", ""))
+                    break
 
         if per_val is not None:
             if per_val <= 0:
@@ -295,7 +282,7 @@ def fetch_full_stock_analysis(code: str):
     except Exception:
         pass
 
-    # 5. 복합 점수 산출 및 종합 의견 결정
+    # 5. 복합 점수 산출
     total_score = val_score + flow_score + tech_score
 
     if total_score >= 85:
@@ -309,7 +296,7 @@ def fetch_full_stock_analysis(code: str):
 
     default_res["종합의견"] = recommendation
 
-    # 6. 스나이퍼 텔레그램 발송 (85점 이상 시 알림)
+    # 6. 스나이퍼 텔레그램 발송
     alert_key = f"alert_{code}_{datetime.datetime.now().strftime('%Y%m%d')}"
     if total_score >= 85 and alert_key not in st.session_state:
         send_telegram_alert(
@@ -397,7 +384,7 @@ display_df = pd.DataFrame(display_rows)
 
 last_sync = st.session_state.get("last_sync_time")
 sync_label = f" | 💾 GitHub 동기화 완료: {last_sync}" if last_sync else ""
-st.caption(f"⚡ NXT 야간장 연동 및 퀀트 멀티 팩터 분석 완료{sync_label}")
+st.caption(f"⚡ 멀티 팩터 분석{sync_label}")
 
 # 통합 데이터 테이블
 edited_df = st.data_editor(
@@ -416,6 +403,22 @@ edited_df = st.data_editor(
     },
     use_container_width=True,
     hide_index=True
+)
+
+# 표 하단: 종합의견 산출 기준 안내
+st.markdown(
+    """
+    <div style='background-color: #1e2129; padding: 12px 16px; border-radius: 8px; font-size: 13px; color: #d0d4dc; margin-top: 6px; margin-bottom: 12px; border: 1px solid #2d3139;'>
+        <b>📊 퀀트 종합의견 산출 기준 (100점 만점)</b><br>
+        • <b>팩터 가중치</b>: 가치/실적 (30점) + 5일 메이저 수급 (35점) + 기술적 모멘텀/RSI (35점)<br>
+        • <b>등급 구분</b>: 
+        <span style='color: #ff4b4b;'>🔥 <b>강력 매수</b> (85점 이상)</span> &nbsp;|&nbsp; 
+        <span style='color: #21c354;'>🟢 <b>매수</b> (70~84점)</span> &nbsp;|&nbsp; 
+        <span style='color: #faca2b;'>🟡 <b>관망</b> (50~69점)</span> &nbsp;|&nbsp; 
+        <span style='color: #808495;'>🔴 <b>매도</b> (50점 미만)</span>
+    </div>
+    """,
+    unsafe_allow_html=True
 )
 
 # 종목 삭제 버튼
