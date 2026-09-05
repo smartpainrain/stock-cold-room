@@ -14,7 +14,7 @@ DATA_FILE = "portfolio.json"
 st.set_page_config(page_title="Stock Cold-Room", layout="wide", initial_sidebar_state="collapsed")
 
 # =====================================================================
-# [반응형 프리미엄 터미널 및 컬럼 정렬 커스텀 CSS]
+# [반응형 프리미엄 터미널 및 컬럼 정렬 완벽 고정 CSS]
 # =====================================================================
 st.markdown("""
 <style>
@@ -47,17 +47,27 @@ st.markdown("""
     }
 
     /* -------------------------------------------------------------
-       데이터 에디터 정렬 강제 적용 (종목명/코드: 중앙, 수치데이터: 우측)
+       데이터 에디터 컬럼별 정렬 강제 적용 (중앙 및 우측)
        ------------------------------------------------------------- */
+    /* 1. 선택 (체크박스) */
     div[data-testid="stDataFrame"] th:nth-child(1), div[data-testid="stDataFrame"] td:nth-child(1) { text-align: center !important; }
+    /* 2. 종목명 (중앙) */
     div[data-testid="stDataFrame"] th:nth-child(2), div[data-testid="stDataFrame"] td:nth-child(2) { text-align: center !important; }
+    /* 3. 코드 (중앙) */
     div[data-testid="stDataFrame"] th:nth-child(3), div[data-testid="stDataFrame"] td:nth-child(3) { text-align: center !important; }
+    /* 4. 현재가(수동) (우측) */
     div[data-testid="stDataFrame"] th:nth-child(4), div[data-testid="stDataFrame"] td:nth-child(4) { text-align: right !important; }
+    /* 5. 현재가(정규장) (우측) */
     div[data-testid="stDataFrame"] th:nth-child(5), div[data-testid="stDataFrame"] td:nth-child(5) { text-align: right !important; }
+    /* 6. 실적 (중앙) */
     div[data-testid="stDataFrame"] th:nth-child(6), div[data-testid="stDataFrame"] td:nth-child(6) { text-align: center !important; }
+    /* 7. 수급(5D) (중앙) */
     div[data-testid="stDataFrame"] th:nth-child(7), div[data-testid="stDataFrame"] td:nth-child(7) { text-align: center !important; }
+    /* 8. 20일선 (우측) */
     div[data-testid="stDataFrame"] th:nth-child(8), div[data-testid="stDataFrame"] td:nth-child(8) { text-align: right !important; }
+    /* 9. RSI (우측) */
     div[data-testid="stDataFrame"] th:nth-child(9), div[data-testid="stDataFrame"] td:nth-child(9) { text-align: right !important; }
+    /* 10. 의견 (중앙) */
     div[data-testid="stDataFrame"] th:nth-child(10), div[data-testid="stDataFrame"] td:nth-child(10) { text-align: center !important; }
 </style>
 """, unsafe_allow_html=True)
@@ -365,7 +375,7 @@ if submitted:
             st.error("등록 실패. 올바른 종목명이나 6자리 코드를 입력하세요.")
 
 # -------------------------------------------------------------
-# 데이터 에디터 테이블 영역 (현재가 수정 영구 저장 보장)
+# 데이터 에디터 테이블 영역 (컬럼 정렬 완벽 고정)
 # -------------------------------------------------------------
 display_rows = []
 codes = st.session_state.stock_df['코드'].tolist()
@@ -395,7 +405,7 @@ if codes:
         })
 
 display_df = pd.DataFrame(display_rows)
-st.caption("⚡ [안내] '현재가' 칸에 원하는 가격을 입력하고 엔터를 치면 즉시 저장되며 브리핑에 반영됩니다.")
+st.caption("⚡ [안내] '현재가' 칸에 원하는 가격을 입력하고 엔터를 치면 콤마가 찍히며 즉시 반영 및 브리핑에 적용됩니다.")
 
 column_config = {
     "종목명": st.column_config.TextColumn(disabled=True),
@@ -414,7 +424,6 @@ column_config["선택"] = st.column_config.CheckboxColumn("삭제", disabled=not
 
 edited_df = st.data_editor(display_df, key="stock_editor", column_config=column_config, use_container_width=True, hide_index=True)
 
-# 변경 감지 및 영구 저장 로직
 if not edited_df.equals(display_df):
     for idx, row in edited_df.iterrows():
         target_code = row["코드"]
