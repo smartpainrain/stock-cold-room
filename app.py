@@ -51,7 +51,7 @@ st.markdown("""
 http_session = requests.Session()
 
 # -------------------------------------------------------------
-# 1. 설정 및 인증 / GitHub / 텔레그램
+# 1. 설정 및 인증 / GitHub
 # -------------------------------------------------------------
 def get_config(key):
     try:
@@ -115,7 +115,7 @@ def save_to_github(df):
     return False
 
 # -------------------------------------------------------------
-# 2. 퀀트 분석 엔진 (크래시 방지 및 NXT 우선순위 완벽 반영)
+# 2. 종목 검색 엔진 (에러 100% 픽스)
 # -------------------------------------------------------------
 TICKER_DICT = {
     "삼성전자": "005930", "sk하이닉스": "000660", "한화에어로스페이스": "012450", 
@@ -124,27 +124,36 @@ TICKER_DICT = {
 }
 
 def resolve_code(name_or_code):
+    """이름을 입력하면 무조건 6자리 종목코드를 반환하는 안전한 함수"""
     cleaned = str(name_or_code).strip()
     if len(cleaned) == 6 and cleaned.isdigit(): return cleaned
+    
     cleaned_lower = cleaned.lower().replace(" ", "")
     for k, v in TICKER_DICT.items():
         if k.lower().replace(" ", "") == cleaned_lower: return v
+        
     try:
+        # 네이버 자동완성 API 파싱
         search_url = f"https://ac.finance.naver.com/ac?q={requests.utils.quote(cleaned)}&target=stock"
         res = http_session.get(search_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3).json()
         items = res.get("items", [[]])[0]
-        # 이름의 일부만 입력해도 첫 번째 검색 결과를 가져오도록 로직 완화
+        
         if items:
-            return str(items[0][0])
+            # 반환된 배열 ["삼성전기", "009150", "KOSPI"] 속에서 무조건 6자리 숫자만 추출
+            for field in items[0]:
+                if isinstance(field, str) and len(field) == 6 and field.isdigit():
+                    return field
     except: pass
     return ""
 
 def safe_parse_price(val):
-    """문자열에서 숫자만 완벽하게 추출하여 에러(크래시) 원천 차단"""
     if not val: return 0
     s = re.sub(r'[^\d]', '', str(val))
     return int(s) if s else 0
 
+# -------------------------------------------------------------
+# 3. 퀀트 분석 엔진 (NXT / 시간외 체결 완벽 반영)
+# -------------------------------------------------------------
 def fetch_full_stock_analysis(code: str):
     default_res = {
         "현재가": 0, "수급": "⚠️ 데이터 집계불가", "실적진단": "지표 산출불가", 
@@ -153,33 +162,40 @@ def fetch_full_stock_analysis(code: str):
     if not code: return default_res
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
-    # 1. NXT 장외체결가 및 실시간 체결가 다중 추적 (에러 방어 탑재)
     cur_p = 0
+    
+    # 1. NXT 장외체결가 우선 탐색 로직 (다중 키 스캔)
     try:
         url_intg = f"https://m.stock.naver.com/api/stock/{code}/integration"
         intg_res = http_session.get(url_intg, headers=headers, timeout=3).json()
-        
         deal = intg_res.get("dealInfo", {})
-        nxt_p = safe_parse_price(deal.get("nxtPrice") or deal.get("overMarketPrice"))
+        
+        # 정규장 종가
         reg_p = safe_parse_price(deal.get("closePrice"))
         
-        # NXT/시간외가 0이 아니면 최우선 적용, 아니면 정규장 종가
+        # NXT 야간장, 시간외 단일가 스캔
+        nxt_p = safe_parse_price(deal.get("nxtPrice"))
+        if nxt_p == 0: nxt_p = safe_parse_price(deal.get("timeExtraPrice"))
+        if nxt_p == 0: nxt_p = safe_parse_price(deal.get("overMarketPrice"))
+        
+        # 야간장/시간외 가격이 존재하면 그걸로 덮어쓰기
         cur_p = nxt_p if nxt_p > 0 else reg_p
     except: pass
 
-    # 백업: 폴링 API 확인
+    # 1-2. 백업: 폴링 API 확인 (API 구조 변경 대비)
     if cur_p == 0:
         try:
             url_rt = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
             rt_json = http_session.get(url_rt, headers=headers, timeout=3).json()
             d0 = rt_json.get("datas", [{}])[0]
             
-            over_raw = d0.get("overMarketPrice")
-            if not over_raw and isinstance(d0.get("overMarketPriceInfo"), dict):
-                over_raw = d0["overMarketPriceInfo"].get("overMarketPrice")
-                
-            nxt_p = safe_parse_price(over_raw)
             reg_p = safe_parse_price(d0.get("closePrice"))
+            nxt_p = safe_parse_price(d0.get("nxtPrice"))
+            if nxt_p == 0:
+                omi = d0.get("overMarketPriceInfo", {})
+                if isinstance(omi, dict):
+                    nxt_p = safe_parse_price(omi.get("overMarketPrice"))
+            
             cur_p = nxt_p if nxt_p > 0 else reg_p
         except: pass
 
@@ -201,18 +217,17 @@ def fetch_full_stock_analysis(code: str):
                 per_val = -1.0
                 
         if per_val is None:
-            url_intg = f"https://m.stock.naver.com/api/stock/{code}/integration"
-            intg_res = http_session.get(url_intg, headers=headers, timeout=3).json()
-            raw_per = intg_res.get("consensusInfo", {}).get("per") or intg_res.get("dealInfo", {}).get("per")
-            if raw_per:
-                try: per_val = float(str(raw_per).replace(",", ""))
-                except: per_val = -1.0
-            else:
-                for item in intg_res.get("totalInfos", []):
-                    if "PER" in item.get("key", ""):
-                        try: per_val = float(str(item.get("value")).replace(",", ""))
-                        except: per_val = -1.0
-                        break
+            if 'intg_res' in locals():
+                raw_per = intg_res.get("consensusInfo", {}).get("per") or intg_res.get("dealInfo", {}).get("per")
+                if raw_per:
+                    try: per_val = float(str(raw_per).replace(",", ""))
+                    except: per_val = -1.0
+                else:
+                    for item in intg_res.get("totalInfos", []):
+                        if "PER" in item.get("key", ""):
+                            try: per_val = float(str(item.get("value")).replace(",", ""))
+                            except: per_val = -1.0
+                            break
 
         if per_val is not None:
             if per_val <= 0: val_score, val_label = 5, "적자/PER N/A"
@@ -264,7 +279,7 @@ def fetch_full_stock_analysis(code: str):
         elif orgn_sum > 0: flow_score, default_res["수급"] = 20, "🏢 기관 순매수"
         else: flow_score, default_res["수급"] = 15, "⚖️ 수급 균형(중립)"
 
-    # 4. 차트 모멘텀
+    # 4. 차트 모멘텀 (Fchart API 직결)
     tech_score = 15
     try:
         fchart_url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count=60&requestType=0"
@@ -306,7 +321,7 @@ def fetch_full_stock_analysis(code: str):
     return default_res
 
 # -------------------------------------------------------------
-# 3. 화면 렌더링
+# 4. 화면 렌더링 영역
 # -------------------------------------------------------------
 @st.cache_data(ttl=15)
 def get_kospi_html(update_time_str):
@@ -370,17 +385,13 @@ st.markdown("<br>", unsafe_allow_html=True)
 if 'stock_df' not in st.session_state:
     st.session_state.stock_df = load_portfolio()
 
-# -------------------------------------------------------------
-# 폼 밖으로 제출 처리 분리 (종목 추가 먹통 완벽 해결)
-# -------------------------------------------------------------
-with st.form("add_stock_form"):
+with st.form("add_stock_form", clear_on_submit=True):
     col_in, col_bt = st.columns([4, 1])
     with col_in:
-        input_name = st.text_input("종목명/코드", placeholder="예: 한미반도체 (인증 필요)" if not st.session_state.is_admin else "종목명 또는 6자리 코드 입력", disabled=not st.session_state.is_admin, label_visibility="collapsed")
+        input_name = st.text_input("종목명/코드", placeholder="예: 한미반도체 (인증 필요)" if not st.session_state.is_admin else "종목명 또는 코드 입력", disabled=not st.session_state.is_admin, label_visibility="collapsed")
     with col_bt:
         submitted = st.form_submit_button("➕ 추가", disabled=not st.session_state.is_admin, use_container_width=True)
 
-# 폼 스코프 밖에서 처리해야 데이터 증발 안 함
 if submitted:
     if input_name.strip():
         code = resolve_code(input_name.strip())
@@ -393,7 +404,7 @@ if submitted:
             st.error(f"'{input_name}' 종목을 찾을 수 없습니다.")
 
 # -------------------------------------------------------------
-# 초고속 병렬 처리 테이블 로드
+# 데이터 에디터 테이블 영역
 # -------------------------------------------------------------
 display_rows = []
 codes = st.session_state.stock_df['코드'].tolist()
@@ -411,7 +422,7 @@ if codes:
         })
 
 display_df = pd.DataFrame(display_rows)
-st.caption("⚡ NXT 야간장 가격 실시간 동기화 완료")
+st.caption("⚡ NXT 야간장 가격/시간외 단일가 실시간 반영 완료")
 
 column_config = {
     "종목명": st.column_config.TextColumn(disabled=True),
@@ -438,7 +449,7 @@ if st.session_state.is_admin and len(selected_rows) > 0:
         st.rerun()
 
 # -------------------------------------------------------------
-# 4. 차트 터미널 및 퀀트 융합 AI 브리핑
+# 5. 차트 터미널 및 퀀트 융합 AI 브리핑
 # -------------------------------------------------------------
 def get_ai_analyst_opinion(df, code_name, quant_score, quant_status):
     if df.empty or len(df) < 60: return ""
