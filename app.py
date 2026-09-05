@@ -61,12 +61,12 @@ def load_portfolio():
             pass
 
     if df.empty:
-        return pd.DataFrame(columns=["종목명", "코드", "매수가"])
+        return pd.DataFrame(columns=["종목명", "코드"])
     
-    return df[["종목명", "코드", "매수가"]].copy()
+    return df[["종목명", "코드"]].copy()
 
 def save_to_github(df):
-    clean_df = df[["종목명", "코드", "매수가"]].copy()
+    clean_df = df[["종목명", "코드"]].copy()
     json_content = json.dumps(clean_df.to_dict(orient="records"), ensure_ascii=False, indent=2)
     
     try:
@@ -130,9 +130,9 @@ def resolve_code(name_or_code):
     return ""
 
 @st.cache_data(ttl=30)
-def fetch_full_stock_analysis(code: str, buy_price: int):
+def fetch_full_stock_analysis(code: str):
     default_res = {
-        "현재가": 0, "수익": "-", "수급": "관망", "실적": "-", 
+        "현재가": 0, "수급": "관망", "실적": "-", 
         "20일이격": "-", "RSI": 50.0, "추천": "🟡 관망"
     }
     if not code:
@@ -151,7 +151,7 @@ def fetch_full_stock_analysis(code: str, buy_price: int):
     except Exception:
         pass
 
-    # 2. 네이버 기본적 지표 (PER / EPS 다중 탐색 보완)
+    # 2. 네이버 기본적 지표 (PER / EPS 다중 탐색)
     try:
         url_intg = f"https://m.stock.naver.com/api/stock/{code}/integration"
         intg_json = requests.get(url_intg, headers=headers, timeout=3).json()
@@ -228,12 +228,7 @@ def fetch_full_stock_analysis(code: str, buy_price: int):
     except Exception:
         pass
 
-    # 5. 수익률 계산
-    if buy_price > 0 and default_res["현재가"] > 0:
-        ret = ((default_res["현재가"] - buy_price) / buy_price) * 100
-        default_res["수익"] = f"🔺 +{ret:.2f}%" if ret > 0 else (f"🔻 {ret:.2f}%" if ret < 0 else "0.00%")
-
-    # 6. 스나이퍼 텔레그램 발송
+    # 5. 스나이퍼 텔레그램 발송
     alert_key = f"alert_{code}_{datetime.datetime.now().strftime('%Y%m%d')}"
     if default_res["추천"] == "🔥 강력 매수" and alert_key not in st.session_state:
         send_telegram_alert(f"🎯 [Stock Cold-Room 시그널]\n종목코드: {code}\n상태: 🔥 강력 매수 구간 (RSI: {default_res['RSI']})\n수급: {default_res['수급']}")
@@ -273,13 +268,11 @@ st.divider()
 if 'stock_df' not in st.session_state:
     st.session_state.stock_df = load_portfolio()
 
-# 신규 종목 등록 폼
+# 신규 종목 등록 폼 (매수가 입력 제거)
 with st.form("add_stock_form", clear_on_submit=True):
-    col_input, col_buy, col_btn = st.columns([3, 2, 1])
+    col_input, col_btn = st.columns([4, 1])
     with col_input:
         input_name = st.text_input("종목명 또는 종목코드(6자리)", placeholder="예: 한미반도체 또는 042700")
-    with col_buy:
-        input_buy = st.number_input("매수가 (원)", min_value=0, value=0, step=100)
     with col_btn:
         st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
         submitted = st.form_submit_button("신규 종목 추가")
@@ -289,7 +282,7 @@ with st.form("add_stock_form", clear_on_submit=True):
         if not code:
             st.error("종목을 찾을 수 없습니다. 올바른 6자리 코드를 입력하세요.")
         else:
-            new_row = pd.DataFrame([{"종목명": input_name.strip(), "코드": code, "매수가": int(input_buy)}])
+            new_row = pd.DataFrame([{"종목명": input_name.strip(), "코드": code}])
             st.session_state.stock_df = pd.concat([st.session_state.stock_df, new_row], ignore_index=True)
             save_to_github(st.session_state.stock_df)
             st.rerun()
@@ -298,16 +291,13 @@ with st.form("add_stock_form", clear_on_submit=True):
 display_rows = []
 for idx, row in st.session_state.stock_df.iterrows():
     code = str(row['코드'])
-    buy_p = int(row["매수가"])
-    analyzed = fetch_full_stock_analysis(code, buy_p)
+    analyzed = fetch_full_stock_analysis(code)
 
     display_rows.append({
         "선택": False,
         "종목명": row["종목명"],
         "코드": code,
         "현재가": analyzed["현재가"],
-        "매수가": buy_p,
-        "수익": analyzed["수익"],
         "수급(5일)": analyzed["수급"],
         "실적전망": analyzed["실적"],
         "20일이격": analyzed["20일이격"],
@@ -330,8 +320,6 @@ edited_df = st.data_editor(
         "종목명": st.column_config.TextColumn(disabled=True),
         "코드": st.column_config.TextColumn(disabled=True),
         "현재가": st.column_config.NumberColumn(format="%d 원", disabled=True),
-        "매수가": st.column_config.NumberColumn(format="%d 원", min_value=0, step=100),
-        "수익": st.column_config.TextColumn(disabled=True),
         "수급(5일)": st.column_config.TextColumn(disabled=True),
         "실적전망": st.column_config.TextColumn(disabled=True),
         "20일이격": st.column_config.TextColumn(disabled=True),
@@ -341,17 +329,6 @@ edited_df = st.data_editor(
     use_container_width=True,
     hide_index=True
 )
-
-# 매수가 변경 실시간 반영
-if "stock_editor" in st.session_state and "edited_rows" in st.session_state["stock_editor"]:
-    edited_rows = st.session_state["stock_editor"]["edited_rows"]
-    modified = False
-    for row_idx, changes in edited_rows.items():
-        if "매수가" in changes:
-            st.session_state.stock_df.at[int(row_idx), "매수가"] = int(changes["매수가"])
-            modified = True
-    if modified:
-        save_to_github(st.session_state.stock_df)
 
 # 선택 종목 삭제 버튼
 selected_rows = edited_df[edited_df["선택"] == True]
